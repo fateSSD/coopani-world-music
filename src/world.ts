@@ -3249,6 +3249,31 @@ export class MusicWorld implements World {
     };
   }
 
+  /**
+   * 面板数据面。目前只有一块「形象包」，所以只认 `guide`。
+   *
+   * 面板不是第二套设置页 —— 这里只回答三件事：装什么、装到哪、装完怎么算成了。
+   */
+  private async panelInvoke(panel: string, method: string): Promise<unknown> {
+    if (panel !== 'figure') throw new Error(`没有这块面板:${panel}`);
+    if (method === 'guide') {
+      return {
+        title: '装一个会跟着拍子动的她',
+        why: '律动、蹦迪、打拍子、捂着耳朵摇 —— 这些动作不写在宿主里，只写在形象包的 figure.js 里。'
+          + '宿主 act() 碰到不认识的词只会 return false：脸会变、人不动、也不报错。'
+          + '所以「她最近不太动」多半不是她懒，是包没装或者没选。',
+        steps: [
+          '打开换装页（应用内 #/dress），点「导入形象包」，选那个 zip。',
+          `或者把解压出来的文件夹整个放进 ${this.opts.dataDir}/figures/ 下面。`,
+          '装完在换装页的列表里选中它（名字带「· 律动版」）。**装和用是两步** —— 只装不选，等于没装。',
+        ],
+        check: '选好之后放首歌，或者直接问她现在在听什么，她的头应该跟着拍子动。不动就是没选上。',
+        dir: `${this.opts.dataDir}/figures`,
+      };
+    }
+    throw new Error(`面板 figure 没有这个方法:${method}`);
+  }
+
   webUi(): WorldWebUiDecl {
     const lamps: WorldLamp[] = [];
     const bridge = this.bridge;
@@ -3287,6 +3312,24 @@ export class MusicWorld implements World {
       label: '一起听歌',
       lamps,
       badges,
+      /**
+       * 形象包。
+       *
+       * 音乐这边比别处更该说这件事：**她是跟着拍子动的**，而「跟着拍子动」不在宿主里 ——
+       * 律动、蹦迪、打拍子、捂耳朵摇，全都写在形象包的 `figure.js` 里。
+       * 宿主 `act()` 遇到不认识的词只会 `return false`：脸变、人不动、不报错。
+       * 用户看到的是「她最近不太动」，实际是包装没装 / 没选。
+       *
+       * 文字放在 `description` —— 页签上一定显示，不依赖前端怎么渲染 `invoke` 的返回值。
+       */
+      panels: [{
+        id: 'figure',
+        title: '形象包',
+        description: '她会跟着拍子摇头、蹦迪、捂着耳朵听 —— 这些动作**不在宿主里，在形象包里**。'
+          + '装法：换装页「导入形象包」选 zip，或者把文件夹解压到 data/figures/<名字>/ 再在列表里选中它。'
+          + '不装也照样听歌，只是这些动作发下去没人演。',
+      }],
+      invoke: (panel, method, args) => this.panelInvoke(panel, method, args),
       config: musicConfigGroups(),
       storage: this.storageParts(),
       promptDocs: [{
