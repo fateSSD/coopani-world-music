@@ -17,7 +17,6 @@ import type {
 } from 'cortico/core/types.ts';
 import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.ts';
 import { isPeerRunning } from './peer.ts';
-import { readHostVocab } from './host-vocab.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
@@ -1227,30 +1226,19 @@ export class MusicWorld implements World {
     this.host = host;
     this.log = host.log;
     const cfg = this.cfg;
-    // 先问一句「宿主认哪些动作」。探到了就按它的词表降级；探不到就保持原样，不猜。
-    // 这行日志是给"她不动"这类报障用的第一现场证据——有降级才有得查。
-    const vocab = readHostVocab();
-
-    // 十一个自定义动作，缺哪个都记一笔。宿主每次自动更新都会把补丁冲掉，
-    // 这行日志是「她突然不会动了」的第一现场证据 —— 所以新增一个就往这里加一个，
-    // 漏了等于这条证据作废（humsit 是第 11 个，2026-10-29 补上）。
-    const wanted = ['bounce', 'groove', 'tap', 'enjoy', 'stunned', 'recoil', 'hum', 'cheer', 'sigh', 'peek', 'humsit'];
-    const missing = vocab ? wanted.filter((m) => !vocab.has(m)) : [...wanted];
-
-    // **补完也不重读词表。** 宿主页面已经把旧的 body.js 读进内存，这一轮发新动作名会被丢掉
-    // （解析不出动作，只剩表情）。所以这一轮继续按旧词表降级，重启后页面重新加载才用得上。
-    setHostVocab(vocab);
-    if (vocab) {
-      if (missing.length) {
-        this.log?.info(`宿主词表缺 ${missing.join('/')}，这几个动作已降级到原生动作。`);
-      } else {
-        this.log?.info('宿主词表含全部自定义动作，动作不降级。');
-      }
-    } else {
-      // 读不到词表 = 不知道宿主有什么。这时候不降级，但**必须说清后果**：
-      // 自定义动作会被宿主直接丢掉，她站着不动，而且不报错。
-      this.log?.warn('读不到宿主动作词表，动作按原样下发（不做降级）——宿主若不认识这些动作名，她会站着不动。');
-    }
+    /*
+     * 动作**不降级**。原来这里会去扫宿主的安装目录探词表（`resources/app/node_modules/.../<figure>/figure.json`），
+     * 再按它的词表把不认识的动作换成原生等价动作。
+     *
+     * 2026-11-14 删掉了（市集要求，`cortico-extensions#659`）：按路径读别人的安装包，
+     * 和 journey / pz 那两处是同一个问题，宿主换布局就静默失效。
+     *
+     * 代价说清楚，并且**这条日志是「她不动」时的第一现场证据**：
+     * 名字对不上就会静默丢弃 —— 脸变了、人不动、不报错。想让她真动起来，
+     * 得装一个声明了这些动作的**形象包**（vocab 条目带 `motion` 字段、`gestures` 点名）。
+     */
+    setHostVocab(null);
+    this.log?.info('动作按原样下发（不做降级）：宿主不认识的名字会被丢弃，需要形象包声明这些动作。');
     // 记忆目录：自定义的能不能用，启动时就说清。配错了却一声不响是最坏的情况——
     // 用户会以为记忆在同步盘里，其实一直写在本机，等换机器才发现是空的。
     if (this.layout.problem) this.log?.warn(this.layout.problem);

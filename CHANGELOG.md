@@ -1,5 +1,24 @@
 # 更新日志
 
+## 0.6.1 — 2026-11-14
+
+市集作者复核 0.6.0 后又点出一处，已改。
+
+**`src/host-vocab.ts` 不再扫宿主安装目录**
+
+原来按路径扫 `resources/app/node_modules/cortico-world-desktop-pet/web/<figure>/figure.json`，
+探宿主认得哪些动作，好在发动作名前先做一次降级（宿主没有 `bounce` 就换成 `dance`）。
+
+读的是别人的安装包 —— 和 journey、pz 那两处是同一个问题：拿「我恰好知道宿主的目录布局」
+当契约用，宿主换一次布局就静默失效，而表现是「她不动了」。
+
+现在恒返回 `null`：**「不知道」= 不降级 = 原样发**。代价说清楚 ——
+宿主不认识的动作名会被静默丢弃（脸变了、人不动、不报错）；要真动起来得装一个声明了
+这些动作的**形象包**（`figure.json` 的 vocab 条目带 `motion` 字段、`figure.js` 的 `gestures` 点名）。
+
+`test/music.test.mjs` 加了一条防回归断言：`host-vocab.ts` 里出现 `node:fs` 或 `readFileSync` 就红。
+
+顺带：hearthstone 0.6.1 与 music 0.6.0 已在索引仓 #927 解封，这一版是为了过认证。
 ## 0.6.0 — 2026-11-14
 
 **撤掉宿主补丁。** 这一版是往回退，代价写清楚。

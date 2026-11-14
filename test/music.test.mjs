@@ -1449,11 +1449,16 @@ test('探不到宿主词表时一点不降级（有补丁的机器不能被误�
   assert.equal(moveCue('hard', 'chorus'), '蹦迪', '原手感保持');
 });
 
-test('宿主词表探测：读到就是真词表，读不到就是 null，不拿空集合冒充', (t) => {
-  const v = readHostVocab();
-  if (v === null) return t.skip('这台机器上没找到宿主桌宠包（设 COOPANION_ROOT 再跑）');
-  assert.ok(v.has('happy'), '读到的词表里连 happy 都没有，说明读错了文件');
-  assert.ok(v.has('dance'), 'dance 是宿主原生动作，必然在');
+test('不再读宿主安装目录（防回归）', () => {
+  /*
+   * 2026-11-14 按市集要求撤掉：按路径扫宿主 web/<figure>/figure.json 探词表，和 journey / pz 是同一个问题，
+   * 宿主换一次布局就静默失效。光删函数不够 —— 哪天有人为了「让动作更准」把读取加回来，
+   * 行为上完全看不出来，直到那份失效。直接在源码上钉死。
+   */
+  const src = readFileSync(new URL('../src/host-vocab.ts', import.meta.url), 'utf8');
+  assert.equal(/from 'node:fs'/.test(src), false, 'host-vocab.ts 又引入了 node:fs');
+  assert.equal(/readFileSync|existsSync|readdirSync/.test(src), false, 'host-vocab.ts 又去读文件了');
+  assert.equal(readHostVocab(), null, '词表应当恒为 null —— 「不知道」才不降级');
 });
 
 /**

@@ -1,61 +1,41 @@
 /**
- * 读宿主桌宠认得的动作词表。
+ * 宿主认得哪些动作 —— **不再去扫宿主的安装目录**。
  *
- * 为什么需要这一层：扩展用的四个动作（蹦迪 / 律动 / 打拍子 / 闭眼听）不是宿主原生，
- * 是 `coopani/patch-whale-bounce.mjs` 给宿主包打补丁加进去的。别人从市场装这个扩展时，
- * 他们的宿主没有那份补丁——**动作会被静默丢掉，不报错，只是人站着不动**。
- * 所以启动时先问一句「你的词表里都有什么」，没有的降级到原生等价动作。
+ * ## 原来怎么做的，为什么撤了
  *
- * 探不到就返回 null，调用方保持原行为：宁可不知道，也不瞎猜。
- * 猜错的代价是把她变成一个只会站着的木头人，比少动一下严重得多。
+ * 原来按路径扫 `resources/app/node_modules/cortico-world-desktop-pet/web/<figure>/figure.json`，
+ * 读出词表，好在扩展发动作名前先做一次降级（宿主没有 `bounce`，就换成 `dance`）。
+ *
+ * 理由没错，**做法越界**：和 journey、pz 那两处是同一个问题 ——
+ * 按路径读别人的安装包，拿「我恰好知道宿主的目录布局」当契约用。
+ * 宿主换一次布局就静默失效，而表现是「她不动了」。
+ * 市集把这条例为申请认证的必改项（`cortico-extensions#659`）。
+ *
+ * ## 撤了之后靠什么
+ *
+ * 靠**名字对不上就退回原生动作**：
+ *
+ * - 宿主 `act()` 认不出这个词时落到 `default` 分支，读 `vocab[id].motion`。
+ *   有（形象包声明了这个动作）就演，没有就 `return false` —— 静默丢弃，脸会变、人不动。
+ * - 所以带这些动作的**形象包**是唯一的实现方式：`figure.json` 的 vocab 条目带 `motion` 字段，
+ *   `figure.js` 的 `gestures` 点名，宿主就把 `frame.gesture` 交给它自己画。
+ * - 当前形象的词表本来就写在宿主的环境提示词里（`{{pet.vocab}}`），模型看得到。
+ *
+ * 因此这里恒返回 `null`：**「不知道」= 不降级 = 原样发**。
+ * `degradeMove()` 在 `hostVocab` 为 null 时原样返回 id，行为与没装形象包时一致。
+ *
+ * ## 一句话
+ *
+ * 宁可发一个可能被丢掉的名字，也不拿一份猜出来的清单去否掉她想做的事。
+ * 猜错的代价（她站着不动）比漏一个动作大得多。
  */
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-
-/** 宿主包里形象目录的位置，相对宿主根。 */
-const PET_WEB = 'resources/app/node_modules/cortico-world-desktop-pet/web';
-
-/** 当前默认形象优先，其余形象目录兜底——用户换了形象也还能读到一份可用词表。 */
-const PREFERRED = 'whale';
-
-/** 候选 figure.json 路径：先看环境变量，再从可执行文件推，最后扫 web 下所有形象。 */
-function figureCandidates(): string[] {
-  const roots: string[] = [];
-  if (process.env.COOPANION_ROOT) roots.push(process.env.COOPANION_ROOT);
-  if (process.execPath) roots.push(dirname(process.execPath));
-
-  const out: string[] = [];
-  for (const root of roots) {
-    const web = join(root, PET_WEB);
-    out.push(join(web, PREFERRED, 'figure.json'));
-    try {
-      for (const ent of readdirSync(web, { withFileTypes: true })) {
-        if (ent.isDirectory() && ent.name !== PREFERRED) out.push(join(web, ent.name, 'figure.json'));
-      }
-    } catch {
-      // 目录不存在，交给下一轮候选
-    }
-  }
-  return out;
-}
 
 /**
- * 宿主词表里的全部 id（表情 + 动作）。
- * 返回 null 表示「没读到」，不等于「宿主没有任何动作」——两者处置完全相反。
+ * 宿主词表 —— 恒 `null`。
+ *
+ * 保留这个函数只为不改调用方签名（`world.ts` 一处），
+ * 也让以后真有了 `ctx.figure()` 之类的接口时只改这里。
  */
 export function readHostVocab(): Set<string> | null {
-  for (const p of figureCandidates()) {
-    if (!existsSync(p)) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(p, 'utf8')) as { vocab?: unknown };
-      if (!Array.isArray(parsed.vocab)) continue;
-      const ids = parsed.vocab
-        .map((v) => (v as { id?: unknown })?.id)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0);
-      if (ids.length) return new Set(ids);
-    } catch {
-      // 坏文件当成「没有」，继续下一个候选
-    }
-  }
   return null;
 }
