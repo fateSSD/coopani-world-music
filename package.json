@@ -1,0 +1,72 @@
+{
+  "name": "coopani-world-music",
+  "version": "0.6.0",
+  "type": "module",
+  "description": "陪着你听歌（需 Coopani 0.2.16+）：知道 QQ音乐、网易云在放什么，换歌必说一句、分段接话，还能就着刚唱的词评两句；动作跟着真实鼓点走。想听调子就深听——默认云端（填密钥即可），也可切成完全本机（约 500MB），听出调性、和弦、旋律、声部、乐器，并把听过的段落攒成整首档案；问她「听得清吗」会先听再答，没配好会直说。还记得听歌记录、常听歌手和一份自己写的口味档案。",
+  "author": {
+    "name": "Mr.Q"
+  },
+  "license": "MIT",
+  "keywords": [
+    "cortico-world",
+    "cortico",
+    "music",
+    "qqmusic",
+    "netease",
+    "search",
+    "lyrics",
+    "memory"
+  ],
+  "os": [
+    "win32"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "cortico": {
+    "kind": "world",
+    "api": 6,
+    "displayName": "一起听歌",
+    "icon": "assets/icon.png",
+    "tags": [
+      "apps",
+      "companion",
+      "sensitive-data",
+      "high-cost",
+      "injection-risk",
+      "unofficial-api"
+    ],
+    "locales": {
+      "zh": {
+        "displayName": "一起听歌",
+        "description": "让桌宠陪你听歌，而不是替你听。需要 Coopani 0.2.16 以上，Windows 10/11。\n\n**她怎么陪你听。** 你在 QQ音乐按下播放，几秒后她自己发现换歌了，说一句像样的：歌名、歌手、一句实话——「前奏八秒才进鼓，等得值」。歌往下走，她按这首的长短分两三段接着聊，落到刚唱过的那一两句词上，不念歌词本。你回她一句她接，不回也不催。动作踩的是这首歌真实的鼓点：副歌的鼓真进来了她才动，不是写死的钟摆。\n\n**为什么她不会认错歌。** 读的是 Windows 的系统媒体会话（SMTC），播放器自己上报的歌名、歌手、进度，精确原文——不截屏、不做文字识别、不读播放器的内部数据库。\n\n**她真的听得到，也分得清自己听到什么。** 三档从不混用：能量层（BPM、响度、低音倾向，一直在）、深听层（调性、和弦、主旋律音名、声部、乐器，按需）、印象层（她训练里记得的这首歌）。问她「你听得清吗」，她先去听再答；深听没配好就直接说，不装。\n\n**深听两档，自己挑。** 云端（默认）：填一个 OpenAI 兼容接口的密钥就能用，不占本机空间，十几秒切片传上去、分析完即删；本地：约 500MB 的分离模型，之后完全不出这台机器。两档给同一套字段，每听一次并进这首的档案，攒出「前面是钢琴、副歌才进鼓」这种走向。\n\n**她不会做的事。** 不编歌词、不编旋律；十几秒切片不是整首总谱；乐器只说「倾向」，不说成鉴定；不替你决定听什么；不主动动你的播放器——只有你明说「暂停」「下一首」她才按。没打开的开关，她绝不装作打开了。\n\n**她要用的动作。** music_now 现在放什么、music_history 逐日记录、music_taste 常听歌手与循环曲、music_lyric 唱到哪几句、music_listen 仔细听十几秒、music_pick 自己搜一首并说清理由、music_soul 她自己的口味档案、music_note 记一条笔记、music_tag 标听感路数、music_control 暂停与切歌；另有十二个身体动作是本扩展加的：蹦迪、律动、打拍子、闭眼听、怔住、退半步、跟着哼、跟拍挥、余韵、凑近听、坐着哼、捂耳朵听。\n\n**装它还需要什么。** 要跟拍得允许她采系统输出的能量（设置里能关，只有 Windows 有这条路）；本地深听另需 Python 3.10+，一条安装脚本搞定。那十二个动作住在桌宠宿主包里、npm 带不过来，所以启动时会自动补齐——会改宿主包里两个文件，动手前先备份，补完要再重启一次 Core 才生效，这个开关可以关。记忆默认在本机，可指到同步盘。\n\n**和「大肥鱼环游世界」联动。** 装了那个扩展的话，你正在放的歌会跟着她出门：出发时她会提一句车上在放什么，长途的中间也可能说一次。歌名里带地名的（《成都》《回到拉萨》）会进她的「想去」清单——下次挑目的地时那个地方权重大得多，等于你放什么歌，就可能把她推到哪儿去。没装那个扩展就什么都不影响。\n\n**已知限制：** 一首歌最多三段；网易云不上报进度，只能读窗口标题；两个客户端都不接受从外部点播，替她按播放要靠桌宠的「电脑操作」开关；曲风靠她认和逐步学，证据不足就说「还没标」。"
+      },
+      "en": {
+        "displayName": "Listen With Me",
+        "description": "A companion who listens with you, not instead of you. Needs Coopani 0.2.16+ on Windows 10/11.\n\n**How she listens with you.** You press play in QQ Music; a few seconds later she notices the change and says something worth hearing: title, artist, one honest line - \"eight seconds of intro before the drums, worth the wait\". As the song runs she splits it into two or three passages and keeps talking, landing on the line just sung instead of reciting the lyrics. Answer her and she picks it up; stay quiet and she does not push. Her motion follows the song's actual drums - she moves when the chorus beat really comes in, not on a fixed pendulum.\n\n**Why she never gets the song wrong.** She reads the Windows system media session (SMTC): the title, artist and position that the player itself reports. No screen capture, no OCR, no digging into a player's internal database.\n\n**She really hears, and she knows what she hears.** Three layers, never mixed: energy (tempo, loudness, low-end bias - always on), deep listening (key, chords, melody notes, stems, instruments - on demand), and memory (what she knows about this song from training). Ask \"can you hear it properly?\" and she listens first, then answers; if deep listening is not set up she says so instead of pretending.\n\n**Two ways to deep listen.** Cloud (default): bring a key for any OpenAI-compatible model, nothing to download, the 12-second slice is uploaded, analysed, then deleted. Local: about 500MB of separation models, and nothing ever leaves this machine. Both return the same fields, and every listen is merged into a per-track sheet, so \"piano first, drums only at the chorus\" becomes something she can actually say.\n\n**What she will not do.** She will not invent lyrics or melodies. A 12-second slice is not a full score. Instruments are always a leaning, never a verdict. She will not decide what you should listen to, and she will not touch your player on her own - only when you plainly say \"pause\" or \"next\". She never pretends a switch is on when it is off.\n\n**What she can do.** music_now (what is on), music_history (day by day log), music_taste (top artists, repeats), music_lyric (lines reached), music_listen (listen closely for a few seconds), music_pick (search and pick one, with a reason), music_soul (her own taste file), music_note (keep a note), music_tag (tag how this one feels), music_control (pause, resume, skip). Twelve body motions also come from this extension: bounce, groove, tap, enjoy, stunned, recoil, hum, cheer, sigh, peek, humsit, ear-cover.\n\n**Before you install.** Beat-following needs permission to sample the energy of the system output (can be switched off; Windows only). Local deep listening also needs Python 3.10+ and one install script. Those twelve motions live in the desktop-pet host pack and cannot ship with npm, so they are filled in at startup - that edits two files in the host pack, backed up first, and needs one more Core restart to take effect; the switch can be turned off. Memory stays on this machine by default and can be pointed at a synced folder.\n\n**Works with Big Fish World Tour.** If that extension is installed, whatever you are playing ends up on the road with her: she mentions it when she sets off, and maybe once on a long leg. Song titles with a place in them go onto her wish list - which weighs heavily the next time she picks a destination, so what you play can genuinely push her somewhere. Without it, nothing changes.\n\n**Known limits:** at most three passages per track; NetEase does not report progress, so only the window title is available; neither player accepts outside play requests, so pressing play for you depends on the pet's computer-control switch; genres are recognised and learned, and she says \"not tagged yet\" when the evidence is thin; patched motions need one Core restart."
+      }
+    },
+    "describe": "describe.json"
+  },
+  "files": [
+    "src",
+    "scripts",
+    "assets",
+    "ENV_PROMPT.md",
+    "README.md",
+    "CHANGELOG.md",
+    "describe.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fateSSD/coopani-world-music.git"
+  },
+  "homepage": "https://github.com/fateSSD/coopani-world-music#readme",
+  "bugs": {
+    "url": "https://github.com/fateSSD/coopani-world-music/issues"
+  }
+}

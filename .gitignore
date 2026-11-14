@@ -1,0 +1,7 @@
+node_modules/
+
+# 本地采集与调试留下的东西
+*.log
+*.wav
+.DS_Store
+Thumbs.db

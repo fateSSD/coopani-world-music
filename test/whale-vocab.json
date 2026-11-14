@@ -1,0 +1,397 @@
+[
+  {
+    "id": "neutral",
+    "kind": "expression",
+    "names": [
+      "平静"
+    ]
+  },
+  {
+    "id": "happy",
+    "kind": "expression",
+    "names": [
+      "开心",
+      "高兴"
+    ]
+  },
+  {
+    "id": "wink",
+    "kind": "expression",
+    "names": [
+      "眨眼"
+    ]
+  },
+  {
+    "id": "love",
+    "kind": "expression",
+    "names": [
+      "喜欢",
+      "爱心"
+    ]
+  },
+  {
+    "id": "shy",
+    "kind": "expression",
+    "names": [
+      "害羞"
+    ]
+  },
+  {
+    "id": "surprised",
+    "kind": "expression",
+    "names": [
+      "惊讶",
+      "吃惊"
+    ]
+  },
+  {
+    "id": "angry",
+    "kind": "expression",
+    "names": [
+      "生气"
+    ]
+  },
+  {
+    "id": "sad",
+    "kind": "expression",
+    "names": [
+      "难过",
+      "伤心"
+    ]
+  },
+  {
+    "id": "sleepy",
+    "kind": "expression",
+    "names": [
+      "犯困",
+      "困"
+    ]
+  },
+  {
+    "id": "thinking",
+    "kind": "expression",
+    "names": [
+      "思考",
+      "想想"
+    ]
+  },
+  {
+    "id": "smug",
+    "kind": "expression",
+    "names": [
+      "得意",
+      "嘚瑟"
+    ]
+  },
+  {
+    "id": "pout",
+    "kind": "expression",
+    "names": [
+      "嘟嘴",
+      "哼"
+    ]
+  },
+  {
+    "id": "worried",
+    "kind": "expression",
+    "names": [
+      "担心",
+      "着急"
+    ]
+  },
+  {
+    "id": "determined",
+    "kind": "expression",
+    "names": [
+      "认真",
+      "坚定"
+    ]
+  },
+  {
+    "id": "flustered",
+    "kind": "expression",
+    "names": [
+      "慌张",
+      "窘"
+    ]
+  },
+  {
+    "id": "scared",
+    "kind": "expression",
+    "names": [
+      "害怕",
+      "吓到"
+    ]
+  },
+  {
+    "id": "excited",
+    "kind": "expression",
+    "names": [
+      "期待",
+      "星星眼"
+    ]
+  },
+  {
+    "id": "cry",
+    "kind": "expression",
+    "names": [
+      "大哭",
+      "哭"
+    ]
+  },
+  {
+    "id": "confused",
+    "kind": "expression",
+    "names": [
+      "疑惑",
+      "问号"
+    ]
+  },
+  {
+    "id": "stand",
+    "kind": "motion",
+    "names": [
+      "站起",
+      "站"
+    ]
+  },
+  {
+    "id": "jump",
+    "kind": "motion",
+    "names": [
+      "跳",
+      "跳起来"
+    ]
+  },
+  {
+    "id": "hop",
+    "kind": "motion",
+    "names": [
+      "小跳",
+      "蹦"
+    ]
+  },
+  {
+    "id": "look",
+    "kind": "motion",
+    "names": [
+      "张望",
+      "看看"
+    ]
+  },
+  {
+    "id": "turn",
+    "kind": "motion",
+    "names": [
+      "转身"
+    ]
+  },
+  {
+    "id": "nod",
+    "kind": "motion",
+    "names": [
+      "点头"
+    ]
+  },
+  {
+    "id": "shake",
+    "kind": "motion",
+    "names": [
+      "摇头"
+    ]
+  },
+  {
+    "id": "spin",
+    "kind": "motion",
+    "names": [
+      "转圈"
+    ]
+  },
+  {
+    "id": "sit",
+    "kind": "motion",
+    "names": [
+      "坐下",
+      "坐"
+    ]
+  },
+  {
+    "id": "sleep",
+    "kind": "motion",
+    "names": [
+      "睡觉",
+      "睡"
+    ]
+  },
+  {
+    "id": "dizzy",
+    "kind": "motion",
+    "names": [
+      "晕",
+      "转晕"
+    ]
+  },
+  {
+    "id": "walk",
+    "kind": "motion",
+    "names": [
+      "走走",
+      "散步"
+    ]
+  },
+  {
+    "id": "run",
+    "kind": "motion",
+    "names": [
+      "跑",
+      "跑起来"
+    ]
+  },
+  {
+    "id": "wave",
+    "kind": "motion",
+    "names": [
+      "招手",
+      "打招呼"
+    ]
+  },
+  {
+    "id": "bow",
+    "kind": "motion",
+    "names": [
+      "鞠躬"
+    ]
+  },
+  {
+    "id": "shiver",
+    "kind": "motion",
+    "names": [
+      "发抖",
+      "哆嗦"
+    ]
+  },
+  {
+    "id": "flap",
+    "kind": "motion",
+    "names": [
+      "扑腾",
+      "激动"
+    ]
+  },
+  {
+    "id": "dance",
+    "kind": "motion",
+    "names": [
+      "跳舞",
+      "摇摆"
+    ]
+  },
+  {
+    "id": "bounce",
+    "kind": "motion",
+    "names": [
+      "蹦迪",
+      "蹦跶",
+      "大跳"
+    ]
+  },
+  {
+    "id": "groove",
+    "kind": "motion",
+    "names": [
+      "律动",
+      "跟着摇",
+      "随拍摇"
+    ]
+  },
+  {
+    "id": "tap",
+    "kind": "motion",
+    "names": [
+      "打拍子",
+      "跟拍",
+      "点头打拍"
+    ]
+  },
+  {
+    "id": "enjoy",
+    "kind": "motion",
+    "names": [
+      "闭眼听",
+      "陶醉",
+      "听入神"
+    ]
+  },
+  {
+    "id": "stunned",
+    "kind": "motion",
+    "names": [
+      "怔住",
+      "愣住",
+      "被戳中"
+    ]
+  },
+  {
+    "id": "recoil",
+    "kind": "motion",
+    "names": [
+      "退半步",
+      "甩头",
+      "嫌弃"
+    ]
+  },
+  {
+    "id": "hum",
+    "kind": "motion",
+    "names": [
+      "默唱",
+      "跟着哼",
+      "哼两句"
+    ]
+  },
+  {
+    "id": "cheer",
+    "kind": "motion",
+    "names": [
+      "跟拍挥",
+      "挥手跟拍",
+      "跟着挥"
+    ]
+  },
+  {
+    "id": "sigh",
+    "kind": "motion",
+    "names": [
+      "余韵",
+      "叹一口气",
+      "沉一下"
+    ]
+  },
+  {
+    "id": "peek",
+    "kind": "motion",
+    "names": [
+      "凑近听",
+      "倾身",
+      "贴近"
+    ]
+  },
+  {
+    "id": "humsit",
+    "kind": "motion",
+    "names": [
+      "坐着哼",
+      "坐下哼歌",
+      "坐下来哼"
+    ]
+  },
+  {
+    "id": "earcover",
+    "kind": "motion",
+    "names": [
+      "捂耳朵听",
+      "捂着耳朵摇",
+      "摇头晃脑"
+    ]
+  }
+]
