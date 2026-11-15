@@ -427,7 +427,7 @@ export function musicConfigGroups(): ConfigGroup[] {
       schema: {
         type: 'object',
         title: '记录与位置',
-        description: '听歌记录存在哪、留多久、她能不能替你按键，以及要不要自动补齐桌宠动作。',
+        description: '听歌记录存在哪、留多久、她能不能替你按键。',
         properties: {
           [P('memoryDir')]: {
             type: 'string',

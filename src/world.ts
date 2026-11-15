@@ -16,6 +16,7 @@ import type {
   Logger, StoragePart, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp,
 } from 'cortico/core/types.ts';
 import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.ts';
+import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 /**
  * 面板上显示 / 反馈诊断里带的版本号。
@@ -24,7 +25,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
  * （life / journey / pz / 炉石都是这么做的 —— 同一个隐患，运行时读 package.json
  * 在打包后的路径里不可靠，暂时没有更好的办法。）
  */
-const PANEL_VERSION = '0.6.5';
+const PANEL_VERSION = '0.7.0';
 import { isPeerRunning } from './peer.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
@@ -59,8 +60,16 @@ import {
   type HearingMode, type HearingSlice, type HearingStatus,
 } from './hearing.ts';
 
+/**
+ * 随包带的形象包（`assets/figure-groove`）。
+ *
+ * 按本文件位置定位，理由和 `definition.ts` 里的 ENV_PROMPT 一样：用 `ctx.packageDir` 拼会
+ * 指到 bot 的代码包去，不是这个扩展的目录。
+ */
+const FIGURE_PACK_SOURCE = fileURLToPath(new URL('../assets/figure-groove', import.meta.url));
+
 /** 构建标记。每次改行为都改一下——"改了没效果"和"改了改错了"靠它两秒分开。 */
-const BUILD_TAG = 'b2026-10-31.listen.91';
+const BUILD_TAG = 'b2026-11-15.figure.92';
 
 /**
  * 等歌词的上限。超时就不给词，抓取在后台继续。
@@ -1150,6 +1159,13 @@ export class MusicWorld implements World {
   /** 歌词缓存。构造时就建，理由同 store —— 数据页签要读它。 */
   private readonly lyrics: LyricStore;
   private readonly opts: MusicWorldOptions;
+  /**
+   * 随包带的形象包装到哪里了。
+   *
+   * 留在实例上而不是只打日志：`webUi()` 可能先于 `start()` 被调（数据页签要读它），
+   * 灯得说得出「还没装 / 装好了 / 装失败」三种状态，不能假装。
+   */
+  private figurePack: FigurePackResult | null = null;
 
   /** 最近一次挑会话的结果，工具回执里要说清"为什么没读到"。 */
   private lastPick: PickResult | null = null;
@@ -1248,6 +1264,32 @@ export class MusicWorld implements World {
 
   /* ================= 生命周期 ================= */
 
+  /**
+   * 把随包带的形象包装进 `figures/`。
+   *
+   * 幂等、不抛错 —— 装不上只是「她不能跟着拍子动」，听歌本身一步都不少。
+   * 结果留在 `this.figurePack` 上给灯用：换装页不会告诉我们「选了没」，
+   * 所以灯只能把「装和用是两步」说清楚，不能说成「已经会动了」。
+   */
+  private async installFigurePack(): Promise<void> {
+    try {
+      this.figurePack = await ensureFigurePack({
+        dataDir: this.opts.dataDir,
+        sourceDir: FIGURE_PACK_SOURCE,
+        installer: MUSIC_ID,
+        log: this.log ?? undefined,
+      });
+    } catch (error) {
+      this.figurePack = {
+        status: 'failed',
+        dir: '',
+        version: null,
+        message: `装形象包时出了意外：${error instanceof Error ? error.message : String(error)}`,
+      };
+      this.log?.warn(this.figurePack.message);
+    }
+  }
+
   async start(host: WorldHost): Promise<void> {
     this.host = host;
     this.log = host.log;
@@ -1265,6 +1307,8 @@ export class MusicWorld implements World {
      */
     setHostVocab(null);
     this.log?.info('动作按原样下发（不做降级）：宿主不认识的名字会被丢弃，需要形象包声明这些动作。');
+    // 那组动作只能由形象包提供。随包带了一份，装到桌宠找得到的地方（幂等，不抛错）。
+    await this.installFigurePack();
     // 记忆目录：自定义的能不能用，启动时就说清。配错了却一声不响是最坏的情况——
     // 用户会以为记忆在同步盘里，其实一直写在本机，等换机器才发现是空的。
     if (this.layout.problem) this.log?.warn(this.layout.problem);
@@ -3407,25 +3451,8 @@ export class MusicWorld implements World {
       lamps.push(this.sourceLamp());
     }
     lamps.push(this.hearingLamp());
-    /**
-     * 形象包。这盏灯不报状态，是**说明**。
-     *
-     * 音乐这边比别处更该说：**她是跟着拍子动的**，而「跟着拍子动」不在宿主里 ——
-     * 律动、蹦迪、打拍子、捂耳朵摇，全写在形象包的 `figure.js` 里。
-     * 宿主 `act()` 碰到不认识的词只 `return false`：脸变、人不动、不报错。
-     *
-     * 为什么不放面板：宿主的 WebUI 是预构建的（`dist/web/`），面板 id 必须在前端源码里
-     * 有对应组件、跑过 `pnpm build:web` 才算数。扩展声明一个前端没有的 id，
-     * 界面上就是「面板产物中没有 figure」/「缺少面板构建产物」。
-     * 灯的 `hint` 是悬停就能看全的纯文本 —— 这是首页上唯一能放长句、又不用动宿主前端的地方。
-     */
-    lamps.push({
-      label: '形象包',
-      state: 'online',
-      hint: '她会跟着拍子摇头、蹦迪、捂着耳朵听 —— 那些动作不在宿主里，在形象包里，宿主认不出就丢掉。'
-        + '装法：换装页「导入形象包」选 zip，或者把文件夹解压到 data/figures/<名字>/ 再在列表里选中它。'
-        + '**装和用是两步**，只装不选等于没装。',
-    });
+    /* 形象包。这一版报的是真状态 —— 为什么能报到，见 figureLamp 上面那段。 */
+    lamps.push(this.figureLamp());
 
     const tz = this.opts.timezone;
     const todayRecords = this.store?.readDay(localDay(tz, Date.now())) ?? [];
@@ -3490,6 +3517,35 @@ export class MusicWorld implements World {
    * 分得清暂停；网易云不注册会话，只能读窗口标题——同样在响，一个知道放到第几秒，
    * 一个不知道。这个差别以前只写在日志里，用户看不到，出问题时只能猜。
    */
+  /**
+   * 形象包灯。
+   *
+   * **上一版这盏灯是纯说明，因为它判断不了「装没装」。** 当时的结论是
+   * 「`ctx.dataDir` 和 companion 那个 `data/figures/` 不是一个地方，读不到」——
+   * 这条结论是错的。`ctx.dataDir` 就是部署的 `data` 目录**本身**：
+   * 炉石把 `hearthstone-last-game.json` 写在它下面，这边把 `lyrics/` 写在它下面，
+   * 桌宠的 `figures/` 也在那一层（`<部署>/data/figures/`）。
+   * 所以现在装和报状态都能做。
+   *
+   * 唯一仍然报不出的是「用户在换装页**选没选**这个形象」—— 那要读
+   * `worlds.desktop-pet.skin.figure`，是别人的配置段，不碰（市集同样要求别读）。
+   * 所以这盏灯只敢说「装好了」，不敢说「她会动了」，并把「两步」讲清楚。
+   */
+  private figureLamp(): WorldLamp {
+    const pack = this.figurePack;
+    // 话都在 figure-pack.ts 里写 —— 两包共用一份文案，不在这里再编一遍。
+    if (!pack) {
+      return {
+        label: '形象包',
+        state: 'loading',
+        hint: '随包带了一个形象包，启动时装进 data/figures/groove/。还没开始 —— 等她启动；'
+          + '等不及就把扩展目录里的 assets/figure-groove 拷过去，再去换装页选。',
+      };
+    }
+    const state = pack.status === 'failed' ? 'error' : pack.status === 'occupied' ? 'offline' : 'online';
+    return { label: '形象包', state, hint: pack.message };
+  }
+
   /**
    * 深听状态灯。
    *
