@@ -1,0 +1,283 @@
+/*
+ * 一起听歌 · 面板样式。
+ *
+ * 变量一律用宿主的那一套：`--ink / --ink-soft / --ink-dim / --line / --sheet / --sheet-2 /
+ * --ok / --danger`。**不写死任何颜色** —— 深浅两套主题都由变量带过来，
+ * 写死的话暗色下会糊成一片（pz 那边就因为变量名写错，全部落到深色兜底值，
+ * 浅色纸面上一片发白的字）。
+ *
+ * 每个 var 都给兜底值，取中性灰/墨色 —— 宿主不给变量时，深浅两种主题下都还能读。
+ * 类名统一 `mu-` 前缀，避免跟别的扩展撞。
+ */
+
+.mu-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  font-size: 13px;
+  color: var(--ink, #1b1e24);
+  line-height: 1.65;
+}
+
+/* ---------------- 头部 ---------------- */
+
+.mu-head { display: flex; flex-direction: column; gap: 3px; }
+.mu-eyebrow {
+  margin: 0;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-dim, #9ca3af);
+}
+.mu-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.mu-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-soft, #6b7280);
+  word-break: break-word;
+}
+
+/*
+ * 进度条。没在放歌时宽度是 0，但整条**留着** ——
+ * 一会儿出现一会儿消失，会让人以为界面在跳。
+ */
+.mu-bar {
+  margin-top: 6px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--sheet-2, var(--line, #eef0f3));
+  overflow: hidden;
+}
+.mu-bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent, var(--ink-soft, #6b7280));
+  transition: width 0.4s ease;
+}
+.mu-head[data-playing="0"] .mu-bar-fill { background: transparent; }
+
+/* ---------------- 三块卡 ---------------- */
+
+.mu-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.mu-card {
+  flex: 1 1 210px;
+  min-width: 190px;
+  padding: 11px 13px;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 10px;
+  background: var(--sheet, #ffffff);
+}
+.mu-card h3 {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-soft, #6b7280);
+  letter-spacing: 0.02em;
+}
+
+.mu-muted {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-dim, #9ca3af);
+  line-height: 1.8;
+}
+
+/* 听感：一个大字 + 曲风 */
+.mu-feel {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.mu-feel-word {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink, #1b1e24);
+}
+.mu-genre {
+  font-size: 12.5px;
+  color: var(--ink-soft, #6b7280);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--sheet-2, #f3f4f6);
+}
+.mu-src {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-dim, #9ca3af);
+}
+
+/* 态度 */
+.mu-verdict {
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--ink-soft, #6b7280);
+  margin-bottom: 4px;
+}
+.mu-verdict[data-verdict="like"] { color: var(--ok, #2f855a); }
+.mu-verdict[data-verdict="no"] { color: var(--danger, #c0392b); }
+.mu-why {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--ink-soft, #6b7280);
+  line-height: 1.8;
+}
+
+/* 想听清单 */
+.mu-wants {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12.5px;
+  line-height: 1.95;
+}
+.mu-wants li { color: var(--ink, #1b1e24); }
+.mu-artist {
+  margin-left: 6px;
+  font-size: 11.5px;
+  color: var(--ink-dim, #9ca3af);
+}
+
+/* ---------------- 灯 ---------------- */
+
+.mu-lamps {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.mu-lamp {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 0;
+  border-top: 1px dashed var(--line, #f0f1f3);
+}
+.mu-lamp:first-child { border-top: 0; }
+.mu-lamp-name { font-size: 12.5px; font-weight: 600; }
+.mu-lamp-word {
+  font-size: 11.5px;
+  color: var(--ink-dim, #9ca3af);
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--sheet-2, #f3f4f6);
+}
+.mu-lamp-word[data-state="online"] { color: var(--ok, #2f855a); }
+.mu-lamp-word[data-state="error"] { color: var(--danger, #c0392b); }
+.mu-lamp-hint {
+  flex: 1 1 100%;
+  font-size: 11.5px;
+  color: var(--ink-soft, #6b7280);
+  line-height: 1.75;
+}
+
+/* 小圆点（图例 + 灯） */
+.mu-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--ink-dim, #9ca3af);
+}
+.mu-dot[data-state="online"] { background: var(--ok, #2f855a); }
+.mu-dot[data-state="error"] { background: var(--danger, #c0392b); }
+.mu-dot[data-state="loading"] { background: var(--accent, #c06a35); }
+
+/* ---------------- 说明 ---------------- */
+
+.mu-help {
+  font-size: 12.5px;
+  color: var(--ink-soft, #6b7280);
+}
+.mu-help summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--ink-soft, #6b7280);
+}
+.mu-help summary::-webkit-details-marker { display: none; }
+.mu-help summary::before { content: '\25B8  '; }
+.mu-help[open] summary::before { content: '\25BE  '; }
+.mu-help summary:hover { color: var(--ink, #1b1e24); }
+.mu-legend {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  line-height: 2;
+}
+.mu-legend li b { color: var(--ink, #1b1e24); font-weight: 600; }
+
+/* ---------------- 反馈 ---------------- */
+
+.mu-fb {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line, #e5e7eb);
+}
+.mu-fb-lead {
+  margin: 0 0 9px;
+  font-size: 12.5px;
+  color: var(--ink, #1b1e24);
+}
+.mu-fb-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.mu-btn {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--ink, #1b1e24);
+  background: var(--sheet-2, #f7f8fa);
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 7px;
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1.6;
+}
+.mu-btn:hover { border-color: var(--ink-dim, #9ca3af); }
+.mu-btn:active { transform: translateY(1px); }
+.mu-fb-addr {
+  margin-top: 9px;
+  font-size: 11.5px;
+  color: var(--ink-dim, #9ca3af);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.mu-fb-addr code {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--sheet-2, #f3f4f6);
+}
+.mu-fb-why {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-dim, #9ca3af);
+  line-height: 1.75;
+}
+
+/* ---------------- 页脚 ---------------- */
+
+.mu-foot {
+  font-size: 11px;
+  color: var(--ink-dim, #9ca3af);
+  text-align: right;
+}

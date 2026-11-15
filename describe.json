@@ -138,6 +138,19 @@
           "genre": {
             "type": "string",
             "description": "The genre in your own words, at most 12 characters, e.g. city pop / 抒情 / 后摇 / 钢琴小品. Optional but helpful."
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "like",
+              "meh",
+              "no"
+            ],
+            "description": "Whether you actually want to listen again: like / meh / no. Different from feel. Optional."
+          },
+          "why": {
+            "type": "string",
+            "description": "One short reason, in your own words. Optional."
           }
         },
         "required": [

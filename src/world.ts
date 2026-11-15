@@ -16,6 +16,15 @@ import type {
   Logger, StoragePart, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp,
 } from 'cortico/core/types.ts';
 import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.ts';
+
+/**
+ * 面板上显示 / 反馈诊断里带的版本号。
+ *
+ * ⚠ **发版时跟 `package.json` 一起改。** 两处不一致会让人拿着错版本报障。
+ * （life / journey / pz / 炉石都是这么做的 —— 同一个隐患，运行时读 package.json
+ * 在打包后的路径里不可靠，暂时没有更好的办法。）
+ */
+const PANEL_VERSION = '0.6.4';
 import { isPeerRunning } from './peer.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
@@ -917,11 +926,28 @@ const TAG_DECL: ToolDecl = {
         type: 'string',
         description: 'The genre in your own words, at most 12 characters, e.g. city pop / 抒情 / 后摇 / 钢琴小品. Optional but helpful.',
       },
+      /*
+       * 「听感」和「喜不喜欢」是两件事，但**是同一次判断**。
+       *
+       * 分两个工具的话她只会用一个 —— 标了听感就不说喜不喜欢，或者反过来。
+       * 所以挂在这里当可选参数：标的时候顺手说一句就行，不填也不影响。
+       *
+       * 一首可以又吵又不喜欢，也可以又吵又爱听 —— 合成一个字段她就说不了这种话。
+       */
+      verdict: {
+        type: 'string',
+        enum: ['like', 'meh', 'no'],
+        description: 'Whether you actually want to listen to it again: like = 喜欢，还想听；meh = 说不上，听到也行不听也行；no = 不喜欢。Different from feel. Optional.',
+      },
+      why: {
+        type: 'string',
+        description: 'One short reason for the verdict, in your own words. Optional.',
+      },
     },
     required: ['feel'],
   },
   tags: ['write'],
-  summary: { zh: '给正在放的这首标一个听感，之后按它换表情。', en: 'Tags the current track with how it feels, so later reactions can match.' },
+  summary: { zh: '给正在放的这首标一个听感与态度，之后按它换表情。', en: 'Tags the current track with how it feels and whether you like it.' },
 };
 
 /**
@@ -2104,7 +2130,14 @@ export class MusicWorld implements World {
       { ...NOTE_DECL, handler: async (args) => ({ text: this.noteText(String(args.text ?? '')) }) },
       {
         ...TAG_DECL,
-        handler: async (args) => ({ text: this.tagText(String(args.feel ?? ''), String(args.genre ?? '')) }),
+        handler: async (args) => ({
+          text: this.tagText(
+            String(args.feel ?? ''),
+            String(args.genre ?? ''),
+            String(args.verdict ?? ''),
+            String(args.why ?? ''),
+          ),
+        }),
       },
       {
         ...PICK_DECL,
@@ -2123,6 +2156,86 @@ export class MusicWorld implements World {
       },
       { ...LISTEN_DECL, handler: async () => ({ text: await this.hearingText() }) },
     ];
+  }
+
+  /* ================= 面板 ================= */
+
+  private async panelInvoke(_panel: string, method: string, _args?: unknown): Promise<unknown> {
+    if (method !== 'snapshot' && method !== '') {
+      throw new Error(`没有这个方法：${method}`);
+    }
+    return this.panelSnapshot();
+  }
+
+  /**
+   * 面板要的那一份。
+   *
+   * **只读**：这一页没有任何写操作。想让她记态度，走 `music_tag` 的 `verdict` 参数 ——
+   * 那是她自己在听的时候下的判断，不该由面板上的按钮替她下。
+   */
+  private panelSnapshot(): Record<string, unknown> {
+    const st = this.tracker?.state() ?? null;
+    const track = st?.playing && st.track ? st.track : null;
+    const ui = this.webUi();
+    const tz = this.opts.timezone;
+    const todayRecords = this.store?.readDay(localDay(tz, Date.now())) ?? [];
+    const todayMs = todayRecords.reduce((sum, r) => sum + (Number(r.ms) || 0), 0);
+
+    const vibe = track ? this.vibeOf(track) : null;
+    /* 没说过就是没说过 —— **不拿 vibe 冒充态度**。 */
+    const like = track && this.store ? this.store.likeOf(trackKey(track)) : null;
+    const wants = this.store?.wants(8) ?? [];
+
+    const feelText = vibe ? FEEL_TEXT[vibe.feel] : '';
+    const verdictWord = like
+      ? (like.verdict === 'like' ? '喜欢' : like.verdict === 'meh' ? '说不上' : '不喜欢')
+      : '';
+
+    const digest = [
+      `版本 ${PANEL_VERSION}`,
+      `播放器：${track ? playerLabel(track.app, this.cfg.extraPlayers) : (st ? '在跑，没在放' : '没连上')}`,
+      track
+        ? `这首：《${track.title || '未知'}》${track.artist ? ` - ${track.artist}` : ''}${feelText ? `（${feelText}${vibe?.genre ? ` · ${vibe.genre}` : ''}）` : ''}`
+        : '这首：没在放',
+      `态度：${verdictWord || '还没说过'}${like?.why ? `（${like.why}）` : ''}`,
+      `想听：${wants.length} 首`,
+      `今天：${todayRecords.length} 首${todayMs > 0 ? ` · ${humanDuration(todayMs)}` : ''}`,
+      `灯：${(ui.lamps ?? []).map((l) => `${l.label} ${l.state}`).join(' / ')}`,
+    ].join('\n');
+
+    return {
+      version: PANEL_VERSION,
+      now: track
+        ? {
+          title: track.title || '未知曲目',
+          artist: track.artist || '',
+          album: track.album || '',
+          app: playerLabel(track.app, this.cfg.extraPlayers),
+          posSec: typeof st?.posSec === 'number' ? st.posSec : null,
+          durSec: typeof st?.durSec === 'number' ? st.durSec : null,
+        }
+        : null,
+      playerUp: Boolean(st),
+      vibe: vibe
+        ? {
+          feel: vibe.feel,
+          feelText,
+          genre: vibe.genre,
+          /* 这个认知从哪儿来：tag / album / artist / guess / audio / none。如实给，别装确定。 */
+          source: vibe.source,
+          reason: vibe.reason ?? '',
+        }
+        : null,
+      like: like ? { verdict: like.verdict, word: verdictWord, why: like.why, at: like.ts } : null,
+      wants: wants.map((w) => ({ title: w.title, artist: w.artist })),
+      today: { count: todayRecords.length, msText: todayMs > 0 ? humanDuration(todayMs) : '' },
+      lamps: ui.lamps ?? [],
+      feedback: {
+        repo: 'https://github.com/fateSSD/coopani-world-music',
+        version: PANEL_VERSION,
+        digest,
+      },
+    };
   }
 
   /**
@@ -2538,7 +2651,7 @@ export class MusicWorld implements World {
     return addSoulLine(dir, args.section, add).message;
   }
 
-  private tagText(feel: string, genre: string): string {
+  private tagText(feel: string, genre: string, verdict = '', why = ''): string {
     if (!this.vibes) return '听歌扩展还没启动，没标上。';
     const track = this.tracker?.state().track;
     if (!track) return '现在没在放，没标。';
@@ -2551,15 +2664,39 @@ export class MusicWorld implements World {
     const label = `${FEEL_TEXT[feel]}${clean ? `（${clean}）` : ''}`;
     const features = this.audioFeatures.summary() ?? undefined;
     const meta = { title: track.title, artist: track.artist, album: track.album, features };
+    /*
+     * 态度单独存。**跟 `vibe` 不是一回事** —— `vibe` 是「这首是什么」，
+     * 态度是「我要不要听」。一首可以又吵又不喜欢，也可以又吵又爱听。
+     */
+    let likeText = '';
+    if (verdict) {
+      const v = verdict.trim().toLowerCase();
+      if (v === 'like' || v === 'meh' || v === 'no') {
+        const r = this.store.addLike({
+          key: trackKey(track),
+          title: track.title,
+          artist: track.artist,
+          verdict: v,
+          why: why.trim().slice(0, 60),
+        }, Date.now());
+        const word = v === 'like' ? '喜欢' : v === 'meh' ? '说不上' : '不喜欢';
+        likeText = r.ok
+          ? `态度也记下了：${word}${why.trim() ? `（${why.trim().slice(0, 60)}）` : ''}。`
+          : '态度那句没写进文件（记忆目录不可写），听感倒是标上了。';
+      } else {
+        likeText = `态度只认 like / meh / no，你给的是「${verdict}」，这句没记。`;
+      }
+    }
+
     if (before && before.feel === feel && (before.genre ?? '') === clean) {
       // 老档案只有 key/feel：同标签重复标记时补齐学习字段，但不改变用户判断。
       if (!before.title || !before.artist || (!before.features && features)) {
         this.vibes.set(trackKey(track), clean, feel, Date.now(), meta);
       }
-      return `${name}本来就是 ${label}，没变。`;
+      return `${name}本来就是 ${label}，没变。${likeText}`;
     }
     this.vibes.set(trackKey(track), clean, feel, Date.now(), meta);
-    return `${before ? '改了' : '记下了'}：${name} → ${label}。这一首后面的段按这个换表情；同专辑、同歌手与相似声音会逐步参考它。`;
+    return `${before ? '改了' : '记下了'}：${name} → ${label}。这一首后面的段按这个换表情；同专辑、同歌手与相似声音会逐步参考它。${likeText}`;
   }
 
   /* ================= 深听：两条路，一份档案 ================= */
@@ -3294,7 +3431,8 @@ export class MusicWorld implements World {
     const todayRecords = this.store?.readDay(localDay(tz, Date.now())) ?? [];
     const todayMs = todayRecords.reduce((sum, r) => sum + (Number(r.ms) || 0), 0);
     const days = this.store?.days() ?? [];
-    const wantCount = this.store.wantCount();
+    /* `?. ` 不是防御性编程 —— 这个方法的注释就写着「webUi() 可能在 start 之前被调（数据页签要读它）」。 */
+    const wantCount = this.store?.wantCount() ?? 0;
     const badges = [
       { label: '今天', value: `${todayRecords.length} 首`, tone: todayRecords.length ? 'on' as const : 'off' as const },
       { label: '听了', value: todayMs > 0 ? humanDuration(todayMs) : '还没开始', tone: todayMs > 0 ? 'plain' as const : 'off' as const },
@@ -3306,6 +3444,20 @@ export class MusicWorld implements World {
       label: '一起听歌',
       lamps,
       badges,
+      /*
+       * 面板。之前不做的理由是「加面板要宿主前端有对应组件」——
+       * 那条约束针对的是**声明一个前端里不存在的 panel id**。
+       * 这次把 `webui/panel.js` 一起提供（`cortico.webUiClient`），
+       * 声明和数据都在自己这边，不存在「产物里没有」的问题。
+       */
+      panels: [
+        {
+          id: 'now',
+          title: '她此刻',
+          description: '在放什么、她怎么听这首、她想听什么。',
+        },
+      ],
+      invoke: (panel: string, method: string, args?: unknown) => this.panelInvoke(panel, method, args),
       config: musicConfigGroups(),
       // 装形象包的入口。上面那盏灯说的是「装什么、为什么」，这里给「去哪儿装」——
       // 光有说明没有入口，等于让人自己找。`#/dress` 是应用内换装页。

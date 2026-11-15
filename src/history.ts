@@ -68,6 +68,7 @@ export class ListenStore {
   private readonly dir: string;
   private readonly notesPath: string;
   private readonly wantsPath: string;
+  private readonly likesPath: string;
   /** 写入目录不可用、已经落到本机兜底过。设置页要如实说，别让人以为在同步盘里。 */
   private fellBack = false;
 
@@ -81,6 +82,7 @@ export class ListenStore {
     this.dir = join(memoryDir, 'listening');
     this.notesPath = join(memoryDir, 'music-notes.jsonl');
     this.wantsPath = join(memoryDir, 'music-wants.jsonl');
+    this.likesPath = join(memoryDir, 'music-likes.jsonl');
   }
 
   /** 写入目录 + 兜底目录（两者相同时只有一个）。 */
@@ -425,6 +427,65 @@ export class ListenStore {
     return this.wants(1000).length;
   }
 
+  /* ---------- 她觉得这首怎么样 ---------- */
+
+  /**
+   * 记一句「这首我觉得怎样」。
+   *
+   * ## 为什么要单独存，不放进 `vibe`
+   *
+   * `vibe` 是**认知**（硬/柔/旧/怪/普通 + 曲风），它从标签、元数据、声音特征推出来，
+   * 是"这首是什么"。而「喜欢」是**态度**，是"我要不要听"。两件事。
+   *
+   * 一首可以又吵又不喜欢，也可以又吵又爱听 —— 合成一个字段，她就说不了这种话。
+   *
+   * ## 同一首只认最新一条
+   *
+   * 跟 `addWant` 不一样：想听清单里同一首只留一条（不然她一天提十遍），
+   * 而这里**每次写新行、读时取 ts 最大的那条** —— 因为她会改主意，
+   * 而append-only 比改旧行安全（改旧行要重写整个文件，一次断电就全没了）。
+   */
+  addLike(item: Omit<LikeItem, 'ts'>, at: number): { ok: boolean; verdict: string } {
+    const line = `${JSON.stringify({ ts: at, ...item })}\n`;
+    if (!this.writeLine(this.likesPath, line)) {
+      const spare = this.spareRoot;
+      if (!spare || !this.writeLine(join(spare, 'music-likes.jsonl'), line)) {
+        return { ok: false, verdict: item.verdict };
+      }
+      this.fellBack = true;
+    }
+    return { ok: true, verdict: item.verdict };
+  }
+
+  /** 全部"她觉得怎么样"，每首只留最新一条，新的在前。 */
+  likes(limit = 50): LikeItem[] {
+    const byKey = new Map<string, LikeItem>();
+    for (const root of this.roots) {
+      const file = join(root, 'music-likes.jsonl');
+      if (!existsSync(file)) continue;
+      let raw = '';
+      try { raw = readFileSync(file, 'utf8'); } catch { continue; }
+      for (const line of raw.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('{')) continue;
+        try {
+          const w = JSON.parse(trimmed) as LikeItem;
+          if (!w || typeof w.key !== 'string') continue;
+          const prev = byKey.get(w.key);
+          if (!prev || (Number(w.ts) || 0) > (Number(prev.ts) || 0)) byKey.set(w.key, w);
+        } catch { /* 一行坏了不影响别的 */ }
+      }
+    }
+    return Array.from(byKey.values())
+      .sort((a, b) => (Number(b.ts) || 0) - (Number(a.ts) || 0))
+      .slice(0, Math.max(1, limit));
+  }
+
+  /** 某一首她怎么说的。没说过返回 null —— 没说过就是没说过，不猜。 */
+  likeOf(key: string): LikeItem | null {
+    return this.likes(2000).find((x) => x.key === key) ?? null;
+  }
+
   /** 清空想听清单。也是读时现读，删掉即刻生效。两处都删。 */
   clearWants(): boolean {
     let ok = true;
@@ -441,6 +502,22 @@ export class ListenStore {
 }
 
 /** 想听清单里的一条。字段跟 picker.ts 的 Track 对齐，但那边不依赖这边。 */
+/**
+ * 她对一首歌的态度。
+ *
+ * `verdict` 只有三档，**不给分数**：给十分制她会开始给每首歌打分，那不是听歌。
+ */
+export interface LikeItem {
+  ts: number;
+  /** `app\u0001title\u0001artist`，跟 `trackKey()` 一致。 */
+  key: string;
+  title: string;
+  artist: string;
+  verdict: 'like' | 'meh' | 'no';
+  /** 为什么。一句话，可以空着。 */
+  why: string;
+}
+
 export interface WantItem {
   ts: number;
   source: string;
