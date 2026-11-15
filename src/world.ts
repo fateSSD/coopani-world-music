@@ -24,7 +24,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
  * （life / journey / pz / 炉石都是这么做的 —— 同一个隐患，运行时读 package.json
  * 在打包后的路径里不可靠，暂时没有更好的办法。）
  */
-const PANEL_VERSION = '0.6.4';
+const PANEL_VERSION = '0.6.5';
 import { isPeerRunning } from './peer.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
