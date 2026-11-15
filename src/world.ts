@@ -3279,7 +3279,7 @@ export class MusicWorld implements World {
     const bridge = this.bridge;
     const st = this.tracker?.state() ?? null;
     if (!bridge) {
-      lamps.push({ label: '播放器', state: 'offline', hint: '还没启动。' });
+      lamps.push({ label: '播放器', state: 'offline', hint: '还没启动过 —— 不用管，开个播放器放首歌它就会连上。' });
     } else {
       const h = bridge.health();
       const lag = h.lastLineAt === null ? null : Math.round((Date.now() - h.lastLineAt) / 1000);
