@@ -1,0 +1,222 @@
+/** 事件声明（describe.json 与 pushEvent 共用一份，别写两处）。 */
+export const EVENT_DECLS = [
+  { kind: 'start', type: 'music.start', trigger: 'flush' as const, zh: '从静默里开始放歌。', en: 'Playback started after a silence.' },
+  { kind: 'track', type: 'music.track', trigger: 'debounce' as const, zh: '换歌了。', en: 'The track changed.' },
+  { kind: 'loop', type: 'music.loop', trigger: 'flush' as const, zh: '同一首歌在这次收听里第 N 遍。', en: 'The same track came round again.' },
+  { kind: 'fidget', type: 'music.fidget', trigger: 'flush' as const, zh: '短时间内连续跳歌。', en: 'Several tracks skipped in a row.' },
+  { kind: 'night', type: 'music.night', trigger: 'flush' as const, zh: '深夜仍在听。', en: 'Still listening late at night.' },
+  { kind: 'long', type: 'music.long', trigger: 'flush' as const, zh: '连续听满一档时长。', en: 'A long stretch of listening.' },
+  { kind: 'segment', type: 'music.segment', trigger: 'debounce' as const, zh: '这一首又走完一段（每首最多 3 段，短歌约一分钟一段，长曲按曲长拉开），可以就这一段说一句。', en: 'Another passage of the current track went by (at most three per track); a cue to comment on this stretch.' },
+  { kind: 'relay', type: 'music.relay', trigger: 'flush' as const, zh: '她自己点的那一首快放完了，该把下一首递过去。', en: 'The track she picked is nearly over; time to hand over the next one.' },
+  // 环境没准备好：Coopani 太旧、动作补丁打不上、或找不到宿主包。
+  // 存在的理由：简介里写了版本要求他不一定读，设置页的红灯他不一定看 ——
+  // 桌宠开口，是唯一一定会被注意到的渠道。
+  { kind: 'setup', type: 'music.setup', trigger: 'flush' as const, zh: '这台机器的环境不对：Coopani 太旧、动作补丁打不上，或者找不到宿主包。附一句该怎么跟他说。', en: 'Something about this machine is off: Coopani too old, host patch blocked, or host pack missing. Carries what to tell the operator.' },
+  // 深听状态：**能用也要说一次**——宿主重启不重建 system 前缀，老会话里的人手里还是旧提示词，
+  // 她连"有深听"都不知道，被问「你听得清吗」只能答听不清。事件是唯一每轮必达的通道。
+  { kind: 'hearing', type: 'music.hearing', trigger: 'flush' as const, zh: '深听状态变了：刚能用（每个版本说一次），或者用不了（云端没密钥 / 本机没装本地环境，一天一次）。正文含怎么用、以及它优先于旧提示词里"不许描述具体声音"那句。', en: 'Deep-listening status changed: newly usable (once per build), or unusable (missing cloud key / local engine not installed, at most daily). The text says how to use it and that it overrides the older "never describe specific sound" rule.' },
+] as const;
+
+export const EVENT_BY_KIND = new Map(EVENT_DECLS.map((e) => [e.kind, e]));
+
+/**
+ * 工具声明放模块级：`tools()` 和自描述用同一份，
+ * 所以不可能出现"声明里有、实现里没有"这种只在日志里冒一行字的不一致。
+ */
+export type ToolTagLiteral = 'read' | 'write' | 'speak' | 'act' | 'flow' | 'snapshot';
+
+export interface ToolDecl {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  tags: readonly ToolTagLiteral[];
+  summary: { zh: string; en: string };
+}
+
+export const NOW_DECL: ToolDecl = {
+  name: 'music_now',
+  description: 'What is playing right now: track, artist, album, which player (QQ音乐 / 网易云音乐), playing or paused, how far in, how long this stretch has lasted, how many tracks today, and whether the reading is alive. Use it whenever the person mentions music and you are not sure what is on, instead of guessing from memory.',
+  parameters: { type: 'object', additionalProperties: false, properties: {} },
+  tags: ['read'],
+  summary: { zh: '现在在放什么、放了多久、以及读不到时为什么读不到。', en: 'What is playing now, for how long, and why it cannot be read when it cannot.' },
+};
+
+export const HISTORY_DECL: ToolDecl = {
+  name: 'music_history',
+  description: 'The listening log for the last days, newest first: per day how many tracks and how long, the artists played, and the tracks with their times. Use it when the person asks what they listened to, or when you want to refer back to something heard earlier.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      days: { type: 'integer', minimum: 1, maximum: 30, description: 'How many days back, today included. Default 1 (today only).' },
+    },
+  },
+  tags: ['read'],
+  summary: { zh: '最近几天的逐日听歌记录。', en: 'The day by day listening log.' },
+};
+
+export const TASTE_DECL: ToolDecl = {
+  name: 'music_taste',
+  description: 'A profile over a longer window: most played artists, the tracks put on repeat, which hours of the day they listen, and which player they use. Use it when the topic is their taste or habits rather than one specific track.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      days: { type: 'integer', minimum: 1, maximum: 90, description: 'Window in days, default 7.' },
+    },
+  },
+  tags: ['read', 'snapshot'],
+  summary: { zh: '常听歌手、循环曲、时段与播放器占比。', en: 'Top artists, repeats, hours and players.' },
+};
+
+export const CONTROL_DECL: ToolDecl = {
+  name: 'music_control',
+  description: 'Pause, resume, or skip the track that is playing. ONLY call it when the person explicitly asks for it ("pause this", "next one", "go back"). Never do it on your own initiative, and never as a joke.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      action: { type: 'string', enum: ['pause', 'resume', 'next', 'prev'], description: 'What to do.' },
+    },
+    required: ['action'],
+  },
+  tags: ['act'],
+  summary: { zh: '替使用者暂停、继续、切下一首或上一首。', en: 'Pauses, resumes or skips the current track.' },
+};
+
+export const NOTE_DECL: ToolDecl = {
+  name: 'music_note',
+  description: 'Keep a short note about what the person said about a song, so you remember it later: notes come back in music_now and in your environment section. Use it when they tell you something worth remembering about the music, not for every track.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      text: { type: 'string', description: "The note, one sentence, in the person's own terms. At most 120 characters." },
+    },
+    required: ['text'],
+  },
+  tags: ['write'],
+  summary: { zh: '记一条关于某首歌的笔记，以后能想起来。', en: 'Keeps a short note about a song for later.' },
+};
+
+export const TAG_DECL: ToolDecl = {
+  name: 'music_tag',
+  description: 'Record the current track genre and reaction. Later passages reuse it; the same album, multiple matching tracks by this artist, and similar audio features gradually teach the world to suggest a genre for new tracks. Call only when you recognise it; a later correction overrides the old tag.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      feel: {
+        type: 'string',
+        enum: ['hard', 'soft', 'old', 'odd', 'plain'],
+        description: 'How to react to it. hard = 烈，摇滚/说唱/电音/现场，值得跟着动；soft = 柔，抒情/民谣/钢琴/器乐，收着听；old = 旧，老歌/戏曲/年代感，带点揶揄；odd = 怪，实验/戏曲/听不出名堂的，皱着眉听；plain = 淡，听不出什么，也说不上讨厌。',
+      },
+      genre: {
+        type: 'string',
+        description: 'The genre in your own words, at most 12 characters, e.g. city pop / 抒情 / 后摇 / 钢琴小品. Optional but helpful.',
+      },
+      verdict: {
+        type: 'string',
+        enum: ['like', 'meh', 'no'],
+        description: 'Whether you actually want to listen to it again: like = 喜欢，还想听；meh = 说不上，听到也行不听也行；no = 不喜欢。Different from feel. Optional.',
+      },
+      why: {
+        type: 'string',
+        description: 'One short reason for the verdict, in your own words. Optional.',
+      },
+    },
+    required: ['feel'],
+  },
+  tags: ['write'],
+  summary: { zh: '给正在放的这首标一个听感与态度，之后按它换表情。', en: 'Tags the current track with how it feels and whether you like it.' },
+};
+
+export const PICK_DECL: ToolDecl = {
+  name: 'music_pick',
+  description: 'Search the real catalogue yourself and pick one track you would actually put on. Returns the track, your reason, and a link. Call it when he asks you to choose something, asks what you would play, or when the talk is plainly about wanting to hear something. IMPORTANT: the link cannot start playback by itself — both players refuse outside play requests — so hand it to him. If your tool list has pet_cua_* (computer use), you can press play yourself with the mouse; but call this first even then, because the relay chain recognises "the track he is playing is the one you picked" by this call, and without it the chain breaks at the second track. Never say you played it unless you actually did. Call with no query to look at the wishlist you already collected.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      query: {
+        type: 'string',
+        description: 'What to look for: a title, an artist, or a mood, e.g. "许巍 时光" / "深夜 钢琴". Leave it out to list what you already wanted to hear.',
+      },
+      why: {
+        type: 'string',
+        description: 'One sentence on why this one, in your own voice. At most 60 characters. Optional.',
+      },
+      from: {
+        type: 'integer',
+        description: 'Take the Nth item already on your wishlist instead of searching (1 = newest, same numbering as the list). Use it when handing over the next track of a relay — costs no search, and the chain stays unbroken. Takes precedence over query.',
+        minimum: 1,
+        maximum: 50,
+      },
+    },
+  },
+  tags: ['read', 'write'],
+  summary: { zh: '自己去曲库里搜一首、挑一首，给出链接和想听的理由。', en: 'Searches the catalogue, picks a track, and returns a link.' },
+};
+
+export const SOUL_DECL: ToolDecl = {
+  name: 'music_soul',
+  description: 'Your own taste file — who you are as a listener, in your own words. Read it with no arguments. Call it when he asks what you like, when a song tells you something about your own taste you did not know before, or when you catch yourself contradicting what is already written there. **All four sections have to actually get used.** Only filling love while the other three stay empty is bookkeeping half a taste — the owner called this out on 2026-11-03 ("only the ones she likes, the other three are missing"). A track that made you frown belongs in hate; "fine, but I would not put it on again" belongs in tolerate; "cannot tell whether it is the song or the moment" belongs in unsure. A complaint said once in a bubble and never written down is gone by tomorrow. The bar for hate: it genuinely made you frown, and you can name the kind — not "I did not feel like it today". Write one short first-person line at a time (`add`), or remove one that no longer holds (`drop`). Not a log of what he played: that is music_taste.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      add: {
+        type: 'string',
+        description: 'One line to write, first person, at most 60 characters, e.g. "我对钢琴独奏没有抵抗力" — a judgement you actually arrived at, not a guess.',
+      },
+      section: {
+        type: 'string',
+        enum: ['love', 'tolerate', 'hate', 'unsure'],
+        description: 'Which part it belongs in: love = 我确实爱听, tolerate = 听听就算了, hate = 我听不下去的, unsure = 还没想明白. Required with `add`. Do not default everything to love — a judgement that is not praise has to land in one of the other three, otherwise this file is just a wall of likes.',
+      },
+      drop: {
+        type: 'string',
+        description: 'Remove the first line containing this text — for when your taste changed and what is written there is no longer true.',
+      },
+    },
+  },
+  tags: ['read', 'write'],
+  summary: { zh: '读/写她自己的口味档案（我爱听什么，第一人称）。', en: 'Reads and writes her own taste file.' },
+};
+
+export const LYRIC_DECL: ToolDecl = {
+  name: 'music_lyric',
+  description: 'Look up who is singing what right now — the lines around where the current track has reached. Use it when he asks about a specific line, what a song is going on about, or quotes something back at you, and when you want to answer with the actual words instead of guessing. Returns nothing useful for instrumentals or tracks that could not be matched, in which case say you cannot see the words — never invent them.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      ahead: {
+        type: 'integer',
+        description: 'How many lines past the current position to include as well, 0-4. Default 0 = only what has just been sung.',
+        minimum: 0,
+        maximum: 4,
+      },
+    },
+  },
+  tags: ['read'],
+  summary: { zh: '查现在这首唱到了哪几句词。', en: 'Looks up the lines the current track has reached.' },
+};
+
+export const LISTEN_DECL: ToolDecl = {
+  name: 'music_listen',
+  description: 'Listen closely to the last ~12 seconds of what is playing, on demand. Two engines depending on the user setting: cloud (default; the audio slice is sent to an OpenAI-compatible audio model the user configured) or local (stem separation on this machine, nothing uploaded). Returns key, chords, vocal melody notes, stems and likely extra instruments, and keeps accumulating a per-track sheet across calls — so asking again builds up the whole song instead of starting over. Use it when he asks what instruments or melody are in this song, or when you genuinely want to listen closely. It takes several seconds; do not call it for every passage.',
+  parameters: { type: 'object', additionalProperties: false, properties: {} },
+  tags: ['read'],
+  summary: { zh: '仔细听最近十几秒：调性、和弦、主旋律、声部与乐器；多听几次会累积成整首的档案。', en: 'Listens closely to the last few seconds: key, chords, melody, stems, instruments; repeated calls accumulate a per-track sheet.' },
+};
+
+/** 全量自描述：给人和扩展市场看，不进提示词。 */
+export const MUSIC_DESCRIBE = {
+  tools: [NOW_DECL, HISTORY_DECL, TASTE_DECL, CONTROL_DECL, NOTE_DECL, TAG_DECL, PICK_DECL, LYRIC_DECL, SOUL_DECL, LISTEN_DECL],
+  events: EVENT_DECLS.map((e) => ({
+    type: e.type,
+    description: { zh: e.zh, en: e.en },
+    trigger: e.trigger,
+  })),
+};

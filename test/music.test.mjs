@@ -21,7 +21,7 @@ import { LyricStore, linesAt, linesFrom, matchScore, parseLrc, quoteLines, segme
 import { MUSIC_DEFAULTS, MUSIC_ID, musicConfigGroups } from '../src/config.ts';
 import { MUSIC } from '../src/definition.ts';
 import {
-  autoHearDue, choiceText, degradeMove, fallbackMove, isLivelySoft, moveChoices, moveCue, moveIdAny, moveIdOf, repeatHint, sayShape, setHostVocab, skipSignal, stateAngle, talkAngle,
+  PHASE_NOTE, SEGMENT_ASK, autoHearDue, choiceText, degradeMove, fallbackMove, isLivelySoft, moveChoices, moveCue, moveIdAny, moveIdOf, repeatHint, sayShape, setHostVocab, skipSignal, stateAngle, talkAngle,
 } from '../src/world.ts';
 import { readHostVocab } from '../src/host-vocab.ts';
 import { isPeerRunning, resetPeerCache } from '../src/peer.ts';
@@ -931,8 +931,7 @@ test('提示词里没有把她自己说成噪音的示范句', () => {
 
   assert.match(prompt, /不许把自己说成噪音/, '禁令不在，光删示范她还会自己发明一个');
 
-  const world = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  const asks = world.split('\n').filter((l) => l.includes('回一句：往后'));
+  const asks = SEGMENT_ASK.filter((l) => l.includes('回一句：往后'));
   assert.ok(asks.length > 0, '段事件里那条「往后」的指令不见了？');
   assert.deepEqual(
     asks.filter((l) => /收尾就停|收尾/.test(l)).map((l) => l.trim()),
@@ -1780,10 +1779,7 @@ test('事件正文里不许塞现成句子 —— 给了她就照着念', async 
 test('尾声提示不许带催促词 —— 那是「快到头了」十连的源头', async () => {
   // 一晚上十次「快到头了 / 快收了 / 快完了」，源头是段位文案里的「尾奏快了」。
   // 段位是事实，催不催是她自己的判断。
-  const { readFile } = await import('node:fs/promises');
-  const { fileURLToPath } = await import('node:url');
-  const src = await readFile(fileURLToPath(new URL('../src/world.ts', import.meta.url)), 'utf8');
-  const line = src.split('\n').find((l) => /^\s*outro:\s*'/.test(l)) ?? '';
+  const line = PHASE_NOTE.outro ?? '';
   assert.ok(line, '找不到 outro 那一行');
   assert.doesNotMatch(line, /快/, `尾声文案里又写"快"了：${line.trim()}`);
 });

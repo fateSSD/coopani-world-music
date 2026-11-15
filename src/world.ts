@@ -18,14 +18,6 @@ import type {
 import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.ts';
 import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
 
-/**
- * 面板上显示 / 反馈诊断里带的版本号。
- *
- * ⚠ **发版时跟 `package.json` 一起改。** 两处不一致会让人拿着错版本报障。
- * （life / journey / pz / 炉石都是这么做的 —— 同一个隐患，运行时读 package.json
- * 在打包后的路径里不可靠，暂时没有更好的办法。）
- */
-const PANEL_VERSION = '0.7.0';
 import { isPeerRunning } from './peer.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
@@ -60,101 +52,20 @@ import {
   type HearingMode, type HearingSlice, type HearingStatus,
 } from './hearing.ts';
 
-/**
- * 随包带的形象包（`assets/figure-groove`）。
- *
- * 按本文件位置定位，理由和 `definition.ts` 里的 ENV_PROMPT 一样：用 `ctx.packageDir` 拼会
- * 指到 bot 的代码包去，不是这个扩展的目录。
- */
-const FIGURE_PACK_SOURCE = fileURLToPath(new URL('../assets/figure-groove', import.meta.url));
-
-/** 构建标记。每次改行为都改一下——"改了没效果"和"改了改错了"靠它两秒分开。 */
-const BUILD_TAG = 'b2026-11-15.figure.92';
-
-/**
- * 等歌词的上限。超时就不给词，抓取在后台继续。
- *
- * 实测一次「搜 + 取词」0.9–1.6 秒（单源取词）。原来定 1.8 秒，理论上够，实际上不够：
- * 2026-10-29 21:21 那次换歌《ハルモニア》，单独跑同一个接口只要 0.9 秒，
- * 但事件链上同时还有炉石在跑，1.8 秒没等到 —— 于是那一句永久没词，
- * 而「刚换歌」恰恰是最想评词的时候。十几分钟里这个窗口漏了 1/3。
- *
- * 提到 2.6 秒。代价是换歌推送最多晚 0.8 秒（她打字本身还要几秒，用户感知不到），
- * 收益是这条窗口基本不再漏 —— 这个交换划算。
- * 再往上就不值了：等久了换歌那句会迟到，「换歌必说一句」的时效性优先。
- */
-const LYRIC_WAIT_MS = 2600;
-
-/** 自己的提示词模板，按本文件位置定位。绝不能用 ctx.packageDir（那是 bot 的代码包目录）。 */
-const ENV_PROMPT_FILE = fileURLToPath(new URL('../ENV_PROMPT.md', import.meta.url));
-/** 系统声音的采集脚本与独立启动器（WASAPI 回环，往 TEMP 写 coopani-audio.json）。 */
-const AUDIO_PROBE_FILE = fileURLToPath(new URL('../assets/audio/probe.ps1', import.meta.url));
-const AUDIO_OUT_FILE = join(tmpdir(), 'coopani-audio.json');
-/** 本地深听：分析器、Python 环境与模型都在本机，不经过云端。 */
-const HEARING_ANALYZER_FILE = fileURLToPath(new URL('../assets/hearing/analyze.py', import.meta.url));
-/**
- * 本机深听环境装在哪。
- *
- * 必须**每台机器一个默认位置**，不能写死某一台的盘符——写死之后别人装上就是"找不到分析器"，
- * 而那句话说起来像扩展坏了。装在 `%LOCALAPPDATA%\CoopaniMusic\hearing`（和设置页推荐的记忆目录同源），
- * 一条安装脚本就能落到这个位置；老机器上已经在别处装好的，仍然认那两处旧路径。
- */
-const HEARING_HOME = (process.env.COOPANI_HEARING_HOME ?? '').trim()
-  || join(process.env.LOCALAPPDATA || homedir(), 'CoopaniMusic', 'hearing');
-/** 这个仓库最早在自己机器上装的那两处（2026-10-31）。只做兼容，不再写进文档。 */
-const LEGACY_HEARING_PYTHON = 'E:/Coopanion/data/hearing-venv/Scripts/python.exe';
-const LEGACY_HEARING_MODELS = 'E:/Coopanion/data/hearing/models';
-const pickExisting = (preferred: string, legacy: string): string => {
-  if (existsSync(preferred)) return preferred;
-  return existsSync(legacy) ? legacy : preferred;
-};
-const HEARING_PYTHON = (process.env.COOPANI_HEARING_PYTHON ?? '').trim()
-  || pickExisting(join(HEARING_HOME, 'venv', 'Scripts', 'python.exe'), LEGACY_HEARING_PYTHON);
-const HEARING_MODELS_DIR = (process.env.COOPANI_HEARING_MODELS ?? '').trim()
-  || pickExisting(join(HEARING_HOME, 'models'), LEGACY_HEARING_MODELS);
-const HEARING_CACHE_DIR = join(HEARING_MODELS_DIR, 'demucs');
-/**
- * 换歌之后多久自动听第一段，也是两次分析之间的硬下限。
- *
- * 30 秒的理由：短于这个，切出来的常常还是上一首的尾巴；长于这个，一首三分钟的歌就只能听
- * 一段，走向（多了什么声部、调性动没动）永远拼不出来。这个数是照着"一首歌至少两段"倒推的。
- */
-const FIRST_HEAR_SEC = 30;
-
-/**
- * 她回一条事件的窗口：推送之后这么久内说的话，才算「对这条事件的回应」。
- *
- * 复读检测要用它把音乐场景的句子从混场里挑出来。段事件间隔 40–50 秒，50 秒够覆盖她的回复
- * （实测她的 pet_say 都在推送后几秒内），又不至于把隔壁牌桌的话卷进来。
- */
-const SAY_WINDOW_MS = 50_000;
-
-/**
- * 能量变化到多少就算「歌在动」，值得凑近听一段。
- *
- * `AudioFeatureAverages.drift()` 的返回值，五维归一化后的欧氏距离。
- *
- * **0.17 是量出来的，不是拍的。** 2026-11-10 18:59–19:04 在真机上采了 19 个样本
- * （15 个来自每 15 秒一条的诊断行，4 个来自触发行，跨三首歌），排序后：
- * 0.019 / 0.062 / 0.070 / 0.081 / 0.082 / 0.083 / 0.089 / 0.099 / 0.099 / 0.107 /
- * 0.112 / 0.116 / 0.126 / 0.164 / 0.169 / 0.173 / 0.195 / 0.210 / 0.223
- * 中位 0.107，P75 = 0.169，P90 = 0.195 —— 取 0.17，落在 P75 上，约四分之一的时间会提前听。
- *
- * 初值 0.08 的教训写在这里：那时几乎每个采样都超阈值，自动深听退化成每 30 秒跑一次的
- * 定时器，比原来的 120 秒还费，而且一点「听得出变化」的意思都没有。
- *
- * ⚠️ 另外得承认：8 个采样（约 7 秒）对 8 个采样这个窗口，量得出「这一段比上一段吵」，
- * 量不出「鼓在第 47 秒进来了」。这个数是动态响度的代理，不是编曲分析。
- */
-export const HEAR_DRIFT = 0.17;
-
-/**
- * 两次「因为声音在变」的深听之间，至少隔这么久。
- *
- * 没有这条，硬下限 30 秒一到、drift 又还高，就会连着跑 —— 实测 18:56:05 和 18:56:39
- * 两次分析几乎首尾相接，那一段 CPU 是被吃满的。
- */
-const HEAR_DRIFT_SEC = 60;
+import {
+  PANEL_VERSION, FIGURE_PACK_SOURCE, BUILD_TAG, LYRIC_WAIT_MS, ENV_PROMPT_FILE,
+  AUDIO_PROBE_FILE, AUDIO_OUT_FILE, HEARING_ANALYZER_FILE, HEARING_HOME,
+  LEGACY_HEARING_PYTHON, LEGACY_HEARING_MODELS, HEARING_PYTHON, HEARING_MODELS_DIR,
+  HEARING_CACHE_DIR, FIRST_HEAR_SEC, SAY_WINDOW_MS, HEAR_DRIFT, HEAR_DRIFT_SEC,
+  STEM_ZH, STATE_FILE, PHASE_NOTE, SEGMENT_ASK, COUNT_MILESTONE, TALK_ANGLES,
+  MOVE_WORD, SIT_MOVES, SEGMENT_SPECIAL, TRACK_SPECIAL, MOVE_FALLBACK, MOVE_DEGRADE,
+} from './constants.ts';
+export * from './constants.ts';
+import {
+  EVENT_DECLS, EVENT_BY_KIND, NOW_DECL, HISTORY_DECL, TASTE_DECL, CONTROL_DECL,
+  NOTE_DECL, TAG_DECL, PICK_DECL, SOUL_DECL, LYRIC_DECL, LISTEN_DECL, MUSIC_DESCRIBE,
+} from './describe.ts';
+export * from './describe.ts';
 
 /**
  * 自动深听该不该跑。抽成纯函数是为了能测 —— 时间窗这种东西，不测就等着上线才发现
@@ -315,13 +226,6 @@ export function repeatHint(says: readonly string[]): string {
 }
 
 
-/** 本机分轨的英文轨名 → 中文。事件和回执里说人话。 */
-const STEM_ZH: Record<string, string> = {
-  drums: '鼓', bass: '贝斯', other: '其他乐器', vocals: '人声', guitar: '吉他', piano: '钢琴',
-};
-
-const STATE_FILE = 'music-state.json';
-
 /** 本机分析器吐出来的那份 JSON。常驻和一次性两条路都按这个形状收。 */
 interface LocalAnalysis {
   ok?: boolean;
@@ -377,90 +281,6 @@ export interface MusicWorldOptions {
   botName: string;
 }
 
-/** 事件声明（describe.json 与 pushEvent 共用一份，别写两处）。 */
-export const EVENT_DECLS = [
-  { kind: 'start', type: 'music.start', trigger: 'flush' as const, zh: '从静默里开始放歌。', en: 'Playback started after a silence.' },
-  { kind: 'track', type: 'music.track', trigger: 'debounce' as const, zh: '换歌了。', en: 'The track changed.' },
-  { kind: 'loop', type: 'music.loop', trigger: 'flush' as const, zh: '同一首歌在这次收听里第 N 遍。', en: 'The same track came round again.' },
-  { kind: 'fidget', type: 'music.fidget', trigger: 'flush' as const, zh: '短时间内连续跳歌。', en: 'Several tracks skipped in a row.' },
-  { kind: 'night', type: 'music.night', trigger: 'flush' as const, zh: '深夜仍在听。', en: 'Still listening late at night.' },
-  { kind: 'long', type: 'music.long', trigger: 'flush' as const, zh: '连续听满一档时长。', en: 'A long stretch of listening.' },
-  { kind: 'segment', type: 'music.segment', trigger: 'debounce' as const, zh: '这一首又走完一段（每首最多 3 段，短歌约一分钟一段，长曲按曲长拉开），可以就这一段说一句。', en: 'Another passage of the current track went by (at most three per track); a cue to comment on this stretch.' },
-  { kind: 'relay', type: 'music.relay', trigger: 'flush' as const, zh: '她自己点的那一首快放完了，该把下一首递过去。', en: 'The track she picked is nearly over; time to hand over the next one.' },
-  // 环境没准备好：Coopani 太旧、动作补丁打不上、或找不到宿主包。
-  // 存在的理由：简介里写了版本要求他不一定读，设置页的红灯他不一定看 ——
-  // 桌宠开口，是唯一一定会被注意到的渠道。
-  { kind: 'setup', type: 'music.setup', trigger: 'flush' as const, zh: '这台机器的环境不对：Coopani 太旧、动作补丁打不上，或者找不到宿主包。附一句该怎么跟他说。', en: 'Something about this machine is off: Coopani too old, host patch blocked, or host pack missing. Carries what to tell the operator.' },
-  // 深听状态：**能用也要说一次**——宿主重启不重建 system 前缀，老会话里的人手里还是旧提示词，
-  // 她连"有深听"都不知道，被问「你听得清吗」只能答听不清。事件是唯一每轮必达的通道。
-  { kind: 'hearing', type: 'music.hearing', trigger: 'flush' as const, zh: '深听状态变了：刚能用（每个版本说一次），或者用不了（云端没密钥 / 本机没装本地环境，一天一次）。正文含怎么用、以及它优先于旧提示词里"不许描述具体声音"那句。', en: 'Deep-listening status changed: newly usable (once per build), or unusable (missing cloud key / local engine not installed, at most daily). The text says how to use it and that it overrides the older "never describe specific sound" rule.' },
-] as const;
-
-const EVENT_BY_KIND = new Map(EVENT_DECLS.map((e) => [e.kind, e]));
-
-/**
- * 每一段该说什么。按段号取，最后一项兜底（配置把段数调到 4 以上时也够用）。
- *
- * 为什么写在事件正文里而不只写在提示词里：实测过三轮。同一句提示推到三段，她就把
- * 上一段的话复述一遍（连推理文本都一模一样）。提示词是背景，事件正文才是她每轮真正
- * 在读的那一行。
- */
-/**
- * 相位的中文说法。一律带"一带"两个字——这是按播放比例切出来的，不是波形分析出来的。
- * 写成"现在是副歌"就是吹牛：一首歌真正的高潮在哪，我们手上没有数据；写成"副歌一带"，
- * 她说话时就不会把话说死，说错了也不至于下不来台。
- */
-const PHASE_NOTE: Record<Phase, string> = {
-  intro: '开场一带，还没进正题',
-  verse: '主歌一带，力气还没上来',
-  chorus: '副歌一带，这一首的高点',
-  bridge: '桥段一带，下面要变',
-  // 原本是「尾声一带，尾奏快了」。那个「快了」是个钩子：她每首到这儿都说一句「快到头了」，
-  // 一晚上十次，八次的措辞只差一个字。段位是事实，催不催是她自己的事。
-  outro: '尾声一带',
-};
-
-const SEGMENT_ASK = [
-  // 第 1 段只在长曲时才会推到（短曲的那一段在 onTick 里被跳过了）。
-  '回一句：这首往后听下来的感觉。歌名和态度换歌时已经讲过了，别重复。',
-  // 段 2（"说他"）不在这里——它按本场第几首轮换，见 TALK_ANGLES。
-  '',
-  // 原来这里写的是「或者一句收尾就停」。实测她理解成「给这首收场」：每首第 3 段都宣告
-  // 「快完了」，还配一句「我不吵你」——那是把陪听说成噪音，Mr.Q 的原话是「她也没吵我啊」。
-  // 所以「收」的意思要说清是**收这句话**，不是替这首谢幕。
-  //
-  // 2026-11-10：同一件事他说了第二遍，换成「她老说不催我，问题是她也没催我啊」——
-  // 上次只堵了「我不吵你」「我道歉」，她换个词继续说「我不催你」（6829 条台词里 81 次）。
-  // 这次把「说完就收」改成能检验的说法：**句子讲完就停，末尾不补保证**。
-  '回一句：往后——下一首、还要听多久。句子讲完就停，别在末尾补一句保证（"我不催你""你随意""都行"这一类不算内容）。别只说"继续放""接着来"，那三个字你已经用过好几遍了；别宣告这首快完了，也别为自己的存在道歉。',
-];
-
-/**
- * 段 2 说哪一样，按"这一场第几首"轮换。
- *
- * 为什么非轮换不可：原来 SEGMENT_ASK[1] 写的是「说他——第几首、连着多久、几点」，
- * 等于给了她一张填空表。实测 19:53–20:22 连续 9 首，9 次全是同一个格式：
- *
- *   第 27 首，七点五十三 / 第 28 首，快八点了 / 第 30 首了，八点零一
- *   第 34 首，八点十二 / 第 35 首，八点十六 / 第 36 首，八点二十一
- *
- * 她抄的是格式，不是内容——和"吃不吃这一套"变成"我吃"是同一个毛病，我这是第二次犯。
- * 根子在"一次给四样事实"：给一张表她就填表，给一样她才说话。
- *
- * 所以现在一次只给一样实据，四首一循环，其中一首完全不给数字（逼她说点别的）。
- * 末位 % 4 保证相邻两首一定不同——同一天里连着两首拿到同一样事实的情况不会出现。
- */
-/** 隔多少首才许说一次"总共听了多少"。Mr.Q 要的是"一二十首"，取 18。 */
-export const COUNT_MILESTONE = 18;
-
-export const TALK_ANGLES = [
-  // 注意别写成"别报第几首"——这一格恰恰给了她"这一场第 N 首"，一边给一边禁会让她两头不是。
-  // 禁的是那个格式，不是数字本身。
-  '说今晚的量。数字可以用，但别写成"第 N 首，几点"这种并列报账，说成一句人话——他的耐性、他今晚没打算停。',
-  '说过了多久。别报钟点，说"一个多小时"这种粗的，或者干脆只说你的感受。',
-  '说人。他认准了谁、连着放同一个嗓子的样子，或者你注意到他手上的动作。',
-];
-
 /**
  * 第 4 格「说你自己的状态」，按曲风分两版。**不放进 TALK_ANGLES，因为它不是一句话。**
  *
@@ -509,56 +329,6 @@ export function talkAngle(indexInSession: number, doneToday = 0): number {
 }
 
 /**
- * 这一段该配哪个动作。
- *
- * 【律动】【打拍子】【闭眼听】三个是新加到鲸鱼形象里的（宿主补丁
- * `coopani/patch-whale-bounce.mjs`），加原来的【跳舞】（原地踩点）和
- * 【蹦迪】（离地 + 横穿一段），一共五种，情绪分得开了。
- *
- * 配的原则是**跟着情绪走，不跟着节拍走**：烈的歌在副歌该蹦，抒情歌到收尾该闭嘴听，
- * 淡的歌不给动作——那首连话都没什么好说的，还动就不对了。
- */
-/**
- * 动作的中文名。**只给名字，不给整句。**
- *
- * 原来这里是整句「动作配【蹦迪】，别用【跳舞】。」，写在事件正文最后，让她单独发一条
- * `pet_act`。实测四条里有就一条她忘了发（21:44:39 只说了话，人站着没动）。所以改成
- * 把动作名并进表情那个括号——宿主的 parseScript（src/script.ts:84）会把
- * `【星星眼, 蹦迪】` 拆成 actions=[excited, bounce]，客户端 pet-app.js:461 先执行动作
- * 再打字，一条 `pet_say` 里全办完，不用她再记一次调用。
- */
-const MOVE_WORD: Record<string, string> = {
-  bounce: '蹦迪',
-  dance: '跳舞',
-  groove: '律动',
-  tap: '打拍子',
-  enjoy: '闭眼听',
-  // 2026-10-28 新增六个：把「被词戳中」「听不下去」「跟着哼」「应援」「余韵」「凑近听」
-  // 这六种真实反应补上。原来四个动作只按"烈/柔/老"三档分，同一个档里换首还是同一个动画。
-  stunned: '怔住',
-  recoil: '退半步',
-  hum: '跟着哼',
-  // 原名「应援」。2026-10-28 三首摇滚实测：给了 5 次机会（3 次是首选），她一次都没选，
-  // 全挑了蹦迪或打拍子。「应援」是给台上的人加油，她在陪听、没有台上的人，这个词在她那儿没有位置。
-  // 改成「跟拍挥」——名字只描述动作本身，不带「为谁」的意思。
-  cheer: '跟拍挥',
-  sigh: '余韵',
-  peek: '凑近听',
-  // 坐下哼：柔歌的可选姿态。不设首选——坐姿比较特殊，什么时候坐下来听完由她自己定。
-  humsit: '坐着哼',
-  // 坐着、两手捂耳、头跟着摇。
-  // 和「坐着哼」的分界：坐着哼是**跟着词哼**（低头），这个是**不想听别的、只想听这一首**（手把耳朵堵上）。
-  // 2026-10-30 Mr.Q 点名要的。
-  earcover: '捂耳朵听',
-  // 下面三个是宿主原生动作，只在"没打补丁的宿主"上作为降级目标出现。
-  // 不补上的话降级白做：id 换对了，中文名查不到，写进脚本还是空的。
-  hop: '小跳',
-  jump: '跳',
-  nod: '点头',
-};
-
-
-/**
  * 这一首虽然是柔的，但算不算「欢快的柔」。
  *
  * **为什么需要这一刀**：柔占标签库 59%（735/1245），而柔的动作用的是【闭眼听】【坐着哼】。
@@ -595,9 +365,6 @@ export function isLivelySoft(feel: Feel | null, genre: string | undefined, featu
  * 所以改成给一个**受控的候选集**：范围仍由路数定（不会跑到别的档），但挑哪个由她按这句话来。
  * 这样两件事同时成立：变化还在，配得上话也在。
  */
-/** 三个坐姿动作。欢快的柔里一个都不给——坐下会让宿主掷那 60% 的睡意骰子。 */
-const SIT_MOVES = new Set(['enjoy', 'humsit', 'earcover']);
-
 export const moveChoices = (feel: Feel | null, move: string, lively = false): string[] => {
   const pool = (MOVE_FALLBACK[feel ?? 'plain'] ?? [])
     .filter((id) => !(lively && SIT_MOVES.has(id)))
@@ -631,59 +398,6 @@ export const choiceText = (choices: readonly string[], face: string, special = '
   return `动作从这几个里挑一个最贴这句话的：${list}。`
     + (special ? `${special}` : '')
     + `除此之外别用别的动作。${example}`;
-};
-
-/** 段事件的例外：这两个是"反应"，几秒钟的事，什么时候用由她自己判断。 */
-const SEGMENT_SPECIAL = '另外两种可以例外：被某句词钉住就用【怔住】，听到不对劲就用【退半步】。';
-
-/** 换歌事件的例外：一首听进去了的歌刚放完，那口气就是【余韵】。 */
-const TRACK_SPECIAL = '上一首要是听进去了，这一句也可以用【余韵】——整个人沉一下再起来。';
-
-/**
- * 撞车时的备选顺序：首选已经用过，就按这张表往后找一个没用过的。
- *
- * 这是在补"她像卡住了"的观感——抒情歌副歌、桥段都算 groove，同一首连着两次【律动】，
- * 换首还是【律动】，桌面上看就是一段循环播放的动画。同一档里的备选比换档更安全：
- * 蹦迪撞了换跳舞（同样在动），律动撞了换闭眼听或打拍子（同样不吵）。
- */
-const MOVE_FALLBACK: Record<Feel, readonly string[]> = {
-  hard: ['cheer', 'bounce', 'dance', 'tap'],
-  // 池子里不放 sigh：「余韵」是反应，只在换歌那一句被点名，混进候选又会变成"状态"。
-  soft: ['peek', 'hum', 'humsit', 'earcover', 'enjoy', 'groove'],
-  old: ['hum', 'tap', 'groove'],
-  odd: ['groove', 'tap'],
-  // **必须留这一档。** `plain` 是「未知」不是「淡」，缺了它，未标路数的歌整首没有动作、
-  // 换歌事件连候选都发不出去（`moveChoices` 拿 `MOVE_FALLBACK[feel]` 当池子）。
-  // 两个都是持续型、不挑曲风的中性动作，先给出去比空着好。
-  plain: ['tap', 'groove'],
-};
-
-/**
- * 宿主不认这个动作时，退到哪个原生动作（顺序即优先，取第一个宿主认得的）。
- *
- * 为什么必须有：bounce / groove / tap / enjoy 四个动作是 `patch-whale-bounce.mjs`
- * 给宿主打的补丁加的。从市场装扩展的人没有这份补丁，宿主会**静默丢弃**这些动作
- * ——不报错，看着就是「她该动的时候不动」。
- *
- * `enjoy`（闭眼听）故意不给备选：宿主那 18 个动作里没有「闭眼」这一项，
- * 拿 sit / sleep 顶替会让她在钢琴曲里坐下打盹，正是用户明确否掉的那个画面。
- * 这一段宁可不给动作——表情照样会变，人不会显得卡住。
- */
-const MOVE_DEGRADE: Record<string, readonly string[]> = {
-  bounce: ['dance', 'hop', 'jump'],
-  groove: ['dance', 'nod'],
-  tap: ['nod', 'dance'],
-  enjoy: [],
-  // 新增六个的降级：宿主原生的 nod / shake / bow / wave / look 能顶住"意思"，
-  // 顶不住"手感"——但有总比没有强，至少她不会像一个坏掉的动画。
-  stunned: ['nod', 'shake'],
-  recoil: ['shake', 'nod'],
-  hum: ['nod', 'tap'],
-  cheer: ['dance', 'wave'],
-  sigh: ['bow'],
-  peek: ['look', 'nod'],
-  humsit: ['sit', 'nod'],
-  earcover: ['sit', 'nod'],
 };
 
 /** 宿主实际认得的 id 集合。null = 没探到，按原样发，一点不降级。 */
@@ -838,231 +552,6 @@ export function moveCueAny(feel: Feel | null, phase: Phase | null, last = ''): s
  */
 export const skipSignal = (signal: Signal): boolean =>
   signal.kind === 'segment' && signal.index === 1 && !isLongform(signal.durSec);
-
-/**
- * 工具声明放模块级：`tools()` 和自描述用同一份，
- * 所以不可能出现"声明里有、实现里没有"这种只在日志里冒一行字的不一致。
- */
-type ToolTagLiteral = 'read' | 'write' | 'speak' | 'act' | 'flow' | 'snapshot';
-
-interface ToolDecl {
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  tags: readonly ToolTagLiteral[];
-  summary: { zh: string; en: string };
-}
-
-const NOW_DECL: ToolDecl = {
-  name: 'music_now',
-  description: 'What is playing right now: track, artist, album, which player (QQ音乐 / 网易云音乐), playing or paused, how far in, how long this stretch has lasted, how many tracks today, and whether the reading is alive. Use it whenever the person mentions music and you are not sure what is on, instead of guessing from memory.',
-  parameters: { type: 'object', additionalProperties: false, properties: {} },
-  tags: ['read'],
-  summary: { zh: '现在在放什么、放了多久、以及读不到时为什么读不到。', en: 'What is playing now, for how long, and why it cannot be read when it cannot.' },
-};
-
-const HISTORY_DECL: ToolDecl = {
-  name: 'music_history',
-  description: 'The listening log for the last days, newest first: per day how many tracks and how long, the artists played, and the tracks with their times. Use it when the person asks what they listened to, or when you want to refer back to something heard earlier.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      days: { type: 'integer', minimum: 1, maximum: 30, description: 'How many days back, today included. Default 1 (today only).' },
-    },
-  },
-  tags: ['read'],
-  summary: { zh: '最近几天的逐日听歌记录。', en: 'The day by day listening log.' },
-};
-
-const TASTE_DECL: ToolDecl = {
-  name: 'music_taste',
-  description: 'A profile over a longer window: most played artists, the tracks put on repeat, which hours of the day they listen, and which player they use. Use it when the topic is their taste or habits rather than one specific track.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      days: { type: 'integer', minimum: 1, maximum: 90, description: 'Window in days, default 7.' },
-    },
-  },
-  tags: ['read', 'snapshot'],
-  summary: { zh: '常听歌手、循环曲、时段与播放器占比。', en: 'Top artists, repeats, hours and players.' },
-};
-
-const CONTROL_DECL: ToolDecl = {
-  name: 'music_control',
-  description: 'Pause, resume, or skip the track that is playing. ONLY call it when the person explicitly asks for it ("pause this", "next one", "go back"). Never do it on your own initiative, and never as a joke.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      action: { type: 'string', enum: ['pause', 'resume', 'next', 'prev'], description: 'What to do.' },
-    },
-    required: ['action'],
-  },
-  tags: ['act'],
-  summary: { zh: '替使用者暂停、继续、切下一首或上一首。', en: 'Pauses, resumes or skips the current track.' },
-};
-
-const NOTE_DECL: ToolDecl = {
-  name: 'music_note',
-  description: 'Keep a short note about what the person said about a song, so you remember it later: notes come back in music_now and in your environment section. Use it when they tell you something worth remembering about the music, not for every track.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      text: { type: 'string', description: "The note, one sentence, in the person's own terms. At most 120 characters." },
-    },
-    required: ['text'],
-  },
-  tags: ['write'],
-  summary: { zh: '记一条关于某首歌的笔记，以后能想起来。', en: 'Keeps a short note about a song for later.' },
-};
-
-const TAG_DECL: ToolDecl = {
-  name: 'music_tag',
-  description: 'Record the current track genre and reaction. Later passages reuse it; the same album, multiple matching tracks by this artist, and similar audio features gradually teach the world to suggest a genre for new tracks. Call only when you recognise it; a later correction overrides the old tag.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      feel: {
-        type: 'string',
-        enum: ['hard', 'soft', 'old', 'odd', 'plain'],
-        description: 'How to react to it. hard = 烈，摇滚/说唱/电音/现场，值得跟着动；soft = 柔，抒情/民谣/钢琴/器乐，收着听；old = 旧，老歌/戏曲/年代感，带点揶揄；odd = 怪，实验/戏曲/听不出名堂的，皱着眉听；plain = 淡，听不出什么，也说不上讨厌。',
-      },
-      genre: {
-        type: 'string',
-        description: 'The genre in your own words, at most 12 characters, e.g. city pop / 抒情 / 后摇 / 钢琴小品. Optional but helpful.',
-      },
-      /*
-       * 「听感」和「喜不喜欢」是两件事，但**是同一次判断**。
-       *
-       * 分两个工具的话她只会用一个 —— 标了听感就不说喜不喜欢，或者反过来。
-       * 所以挂在这里当可选参数：标的时候顺手说一句就行，不填也不影响。
-       *
-       * 一首可以又吵又不喜欢，也可以又吵又爱听 —— 合成一个字段她就说不了这种话。
-       */
-      verdict: {
-        type: 'string',
-        enum: ['like', 'meh', 'no'],
-        description: 'Whether you actually want to listen to it again: like = 喜欢，还想听；meh = 说不上，听到也行不听也行；no = 不喜欢。Different from feel. Optional.',
-      },
-      why: {
-        type: 'string',
-        description: 'One short reason for the verdict, in your own words. Optional.',
-      },
-    },
-    required: ['feel'],
-  },
-  tags: ['write'],
-  summary: { zh: '给正在放的这首标一个听感与态度，之后按它换表情。', en: 'Tags the current track with how it feels and whether you like it.' },
-};
-
-/**
- * 自己找歌。
- *
- * 这个工具只能"搜到 + 挑中 + 给出链接"，**不能替他按播放** —— 两个客户端的
- * 外部点播通道都关了（证据在 picker.ts 头部）。所以描述里必须写死这一句，
- * 否则她会说"我放了"，然后什么都没响，变成一次实实在在的骗人。
- */
-const PICK_DECL: ToolDecl = {
-  name: 'music_pick',
-  description: 'Search the real catalogue yourself and pick one track you would actually put on. Returns the track, your reason, and a link. Call it when he asks you to choose something, asks what you would play, or when the talk is plainly about wanting to hear something. IMPORTANT: the link cannot start playback by itself — both players refuse outside play requests — so hand it to him. If your tool list has pet_cua_* (computer use), you can press play yourself with the mouse; but call this first even then, because the relay chain recognises "the track he is playing is the one you picked" by this call, and without it the chain breaks at the second track. Never say you played it unless you actually did. Call with no query to look at the wishlist you already collected.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      query: {
-        type: 'string',
-        description: 'What to look for: a title, an artist, or a mood, e.g. "许巍 时光" / "深夜 钢琴". Leave it out to list what you already wanted to hear.',
-      },
-      why: {
-        type: 'string',
-        description: 'One sentence on why this one, in your own voice. At most 60 characters. Optional.',
-      },
-      from: {
-        type: 'integer',
-        description: 'Take the Nth item already on your wishlist instead of searching (1 = newest, same numbering as the list). Use it when handing over the next track of a relay — costs no search, and the chain stays unbroken. Takes precedence over query.',
-        minimum: 1,
-        maximum: 50,
-      },
-    },
-  },
-  tags: ['read', 'write'],
-  summary: { zh: '自己去曲库里搜一首、挑一首，给出链接和想听的理由。', en: 'Searches the catalogue, picks a track, and returns a link.' },
-};
-
-/**
- * 她自己的口味档案。
- *
- * 这不是统计（那是 music_taste）：写的是第一人称的"我吃哪一套"。
- * 文件落在记忆目录根部，**听歌记录按 90 天清理时不会碰它** —— 所以描述里要说明
- * "这是长期的东西"，否则她会当成一次性笔记随手改。
- */
-const SOUL_DECL: ToolDecl = {
-  name: 'music_soul',
-  description: 'Your own taste file — who you are as a listener, in your own words. Read it with no arguments. Call it when he asks what you like, when a song tells you something about your own taste you did not know before, or when you catch yourself contradicting what is already written there. **All four sections have to actually get used.** Only filling love while the other three stay empty is bookkeeping half a taste — the owner called this out on 2026-11-03 ("only the ones she likes, the other three are missing"). A track that made you frown belongs in hate; "fine, but I would not put it on again" belongs in tolerate; "cannot tell whether it is the song or the moment" belongs in unsure. A complaint said once in a bubble and never written down is gone by tomorrow. The bar for hate: it genuinely made you frown, and you can name the kind — not "I did not feel like it today". Write one short first-person line at a time (`add`), or remove one that no longer holds (`drop`). Not a log of what he played: that is music_taste.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      add: {
-        type: 'string',
-        description: 'One line to write, first person, at most 60 characters, e.g. "我对钢琴独奏没有抵抗力" — a judgement you actually arrived at, not a guess.',
-      },
-      section: {
-        type: 'string',
-        enum: ['love', 'tolerate', 'hate', 'unsure'],
-        description: 'Which part it belongs in: love = 我确实爱听, tolerate = 听听就算了, hate = 我听不下去的, unsure = 还没想明白. Required with `add`. Do not default everything to love — a judgement that is not praise has to land in one of the other three, otherwise this file is just a wall of likes.',
-      },
-      drop: {
-        type: 'string',
-        description: 'Remove the first line containing this text — for when your taste changed and what is written there is no longer true.',
-      },
-    },
-  },
-  tags: ['read', 'write'],
-  summary: { zh: '读/写她自己的口味档案（我爱听什么，第一人称）。', en: 'Reads and writes her own taste file.' },
-};
-
-const LYRIC_DECL: ToolDecl = {
-  name: 'music_lyric',
-  description: 'Look up who is singing what right now — the lines around where the current track has reached. Use it when he asks about a specific line, what a song is going on about, or quotes something back at you, and when you want to answer with the actual words instead of guessing. Returns nothing useful for instrumentals or tracks that could not be matched, in which case say you cannot see the words — never invent them.',
-  parameters: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      ahead: {
-        type: 'integer',
-        description: 'How many lines past the current position to include as well, 0-4. Default 0 = only what has just been sung.',
-        minimum: 0,
-        maximum: 4,
-      },
-    },
-  },
-  tags: ['read'],
-  summary: { zh: '查现在这首唱到了哪几句词。', en: 'Looks up the lines the current track has reached.' },
-};
-
-const LISTEN_DECL: ToolDecl = {
-  name: 'music_listen',
-  description: 'Listen closely to the last ~12 seconds of what is playing, on demand. Two engines depending on the user setting: cloud (default; the audio slice is sent to an OpenAI-compatible audio model the user configured) or local (stem separation on this machine, nothing uploaded). Returns key, chords, vocal melody notes, stems and likely extra instruments, and keeps accumulating a per-track sheet across calls — so asking again builds up the whole song instead of starting over. Use it when he asks what instruments or melody are in this song, or when you genuinely want to listen closely. It takes several seconds; do not call it for every passage.',
-  parameters: { type: 'object', additionalProperties: false, properties: {} },
-  tags: ['read'],
-  summary: { zh: '仔细听最近十几秒：调性、和弦、主旋律、声部与乐器；多听几次会累积成整首的档案。', en: 'Listens closely to the last few seconds: key, chords, melody, stems, instruments; repeated calls accumulate a per-track sheet.' },
-};
-
-/** 全量自描述：给人和扩展市场看，不进提示词。 */
-export const MUSIC_DESCRIBE = {
-  tools: [NOW_DECL, HISTORY_DECL, TASTE_DECL, CONTROL_DECL, NOTE_DECL, TAG_DECL, PICK_DECL, LYRIC_DECL, SOUL_DECL, LISTEN_DECL],
-  events: EVENT_DECLS.map((e) => ({
-    type: e.type,
-    description: { zh: e.zh, en: e.en },
-    trigger: e.trigger,
-  })),
-};
-
 
 /** 最近 n 天的本地日期串，新的在前。 */
 function recentDays(timezone: string, n: number, now: number): string[] {
