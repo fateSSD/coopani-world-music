@@ -203,11 +203,22 @@ test('配置项真的接上了：默认值、设置页、读取点三处齐全',
   assert.ok(field, '设置页里没有这一项，用户就找不到');
   assert.equal(field[1]['x-path']?.kind, 'directory', '必须是目录选择器，别让人手打路径');
 
-  const { readFile } = await import('node:fs/promises');
-  const { fileURLToPath } = await import('node:url');
-  const src = await readFile(fileURLToPath(new URL('../src/world.ts', import.meta.url)), 'utf8');
-  assert.match(src, /cfg\.memoryDir/, 'world.ts 没读这个配置＝改了不生效');
-  assert.match(src, /resolveLayout\(/, '没走路径解析，自定义目录不会生效');
+  const { MusicWorld } = await import('../src/world.ts');
+  const localDir = tmp('cfg-local');
+  const customDir = tmp('cfg-custom');
+  try {
+    const w = new MusicWorld({
+      cfg: { ...MUSIC_DEFAULTS(), memoryDir: customDir },
+      dataDir: localDir,
+      timezone: 'Asia/Shanghai',
+      botName: '测试鱼',
+    });
+    assert.equal(w.layout.memory, customDir, 'MusicWorld 构造时必须按 cfg.memoryDir 走 resolveLayout');
+    assert.equal(w.layout.custom, true, '自定义目录生效后 custom 应为 true');
+  } finally {
+    rmSync(localDir, { recursive: true, force: true });
+    rmSync(customDir, { recursive: true, force: true });
+  }
 });
 
 test('路径比较认得出"其实是一个目录"', () => {

@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -570,11 +570,15 @@ test('设置页的每个键都是 worlds.music.* 绝对路径', () => {
 });
 
 test('每个配置项都有读取点（声明 ≠ 接线）', () => {
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
+  const srcDir = new URL('../src/', import.meta.url);
+  const src = readdirSync(srcDir)
+    .filter((f) => f.startsWith('world') && f.endsWith('.ts'))
+    .map((f) => readFileSync(new URL(f, srcDir), 'utf8'))
+    .join('\n');
   const fields = Object.keys(MUSIC_DEFAULTS()).filter((f) => f !== 'enabled');
   for (const field of fields) {
     const used = new RegExp(`(this\\.)?cfg\\.${field}\\b`).test(src);
-    assert.ok(used, `${field} 在 schema 里声明了，但 world.ts 从来没读过它`);
+    assert.ok(used, `${field} 在 schema 里声明了，但 world*.ts 从来没读过它`);
   }
 });
 
