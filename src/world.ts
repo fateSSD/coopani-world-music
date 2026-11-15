@@ -3487,8 +3487,14 @@ export class MusicWorld implements World {
       invoke: (panel: string, method: string, args?: unknown) => this.panelInvoke(panel, method, args),
       config: musicConfigGroups(),
       // 装形象包的入口。上面那盏灯说的是「装什么、为什么」，这里给「去哪儿装」——
-      // 光有说明没有入口，等于让人自己找。`#/dress` 是应用内换装页。
-      links: [{ label: '装形象包 → 换装页', href: '#/dress', inheritTheme: true }],
+      /*
+       * 光有说明没有入口，等于让人自己找。`#/dress` 是应用内换装页。
+       *
+       * ⚠ **前面那个 `/` 不能少**（2026-11-15）。宿主 `isSafeLinkHref()` 只放行
+       * 「以 `/` 开头」或「能被 `new URL()` 解析」的 href；`'#/dress'` 两条都不满足，
+       * 于是每次启动都报一条 `有 1 条链接的 href 不安全,已丢弃`，入口悄悄消失。
+       */
+      links: [{ label: '装形象包 → 换装页', href: '/#/dress', inheritTheme: true }],
       storage: this.storageParts(),
       promptDocs: [{
         key: `worlds.${MUSIC_ID}.envPrompt`,
