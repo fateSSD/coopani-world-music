@@ -16,7 +16,7 @@ import type {
   Logger, StoragePart, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp,
 } from 'cortico/core/types.ts';
 import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.ts';
-import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
+import { ensureFigurePack, inspectFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 import { isPeerRunning } from './peer.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
@@ -269,6 +269,9 @@ export class MusicWorld implements World {
    * 幂等、不抛错 —— 装不上只是「她不能跟着拍子动」，听歌本身一步都不少。
    * 结果留在 `this.figurePack` 上给灯用：换装页不会告诉我们「选了没」，
    * 所以灯只能把「装和用是两步」说清楚，不能说成「已经会动了」。
+   *
+   * ⚠ **只从面板按钮调**（2026-11-16）。World 载入时调的是 `refreshFigurePack()`，
+   * 官方要求「不要在载入时自动安装」（`cortico-extensions#659`）。
    */
   private async installFigurePack(): Promise<void> {
     try {
@@ -277,6 +280,8 @@ export class MusicWorld implements World {
         sourceDir: FIGURE_PACK_SOURCE,
         installer: MUSIC_ID,
         log: this.log ?? undefined,
+        // 面板按钮是明确的用户动作，同版本也重写一遍（包里坏了自己救）
+        force: true,
       });
     } catch (error) {
       this.figurePack = {
@@ -284,6 +289,32 @@ export class MusicWorld implements World {
         dir: '',
         version: null,
         message: `装形象包时出了意外：${error instanceof Error ? error.message : String(error)}`,
+      };
+      this.log?.warn(this.figurePack.message);
+    }
+  }
+
+  /**
+   * 启动时只**看**，不装（2026-11-16）。
+   *
+   * 载入就写盘是市集明令禁止的那一类「使用者预期之外的行为」：他装了个听歌扩展，
+   * 结果桌宠的 `data/figures/` 里多出一个包。现在改成面板上一个按钮，点了才装。
+   *
+   * 代价是灯里的状态要靠推断（版本、标记文件、有没有被占），不能靠「刚装过」，
+   * 但那是准的：`inspectFigurePack` 和 `ensureFigurePack` 走同一套判据。
+   */
+  private async refreshFigurePack(): Promise<void> {
+    try {
+      this.figurePack = await inspectFigurePack({
+        dataDir: this.opts.dataDir,
+        sourceDir: FIGURE_PACK_SOURCE,
+      });
+    } catch (error) {
+      this.figurePack = {
+        status: 'failed',
+        dir: '',
+        version: null,
+        message: `看形象包状态时出了意外：${error instanceof Error ? error.message : String(error)}`,
       };
       this.log?.warn(this.figurePack.message);
     }
@@ -306,8 +337,9 @@ export class MusicWorld implements World {
      */
     setHostVocab(null);
     this.log?.info('动作按原样下发（不做降级）：宿主不认识的名字会被丢弃，需要形象包声明这些动作。');
-    // 那组动作只能由形象包提供。随包带了一份，装到桌宠找得到的地方（幂等，不抛错）。
-    await this.installFigurePack();
+    // 那组动作只能由形象包提供。随包带了一份 —— 但**载入时不装**（2026-11-16）。
+    // 只读一眼状态：装没装、是不是别人的、版本旧没旧。装的动作在面板按钮里。
+    await this.refreshFigurePack();
     // 记忆目录：自定义的能不能用，启动时就说清。配错了却一声不响是最坏的情况——
     // 用户会以为记忆在同步盘里，其实一直写在本机，等换机器才发现是空的。
     if (this.layout.problem) this.log?.warn(this.layout.problem);

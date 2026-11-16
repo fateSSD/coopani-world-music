@@ -79,7 +79,18 @@ export * from './helpers.ts';
 export const toolMethods: Record<string, any> = {
   /* ================= 面板 ================= */
 
+  /**
+   * 面板动作。
+   *
+   * `installFigure` 是**唯一**一个写动作（2026-11-16）。它存在的理由就是
+   * 「装形象包要在用户点了之后才发生」—— 载入时自动装被官方点名要求去掉
+   * （`cortico-extensions#659`）。别的动作一律只读。
+   */
   async panelInvoke(_panel: string, method: string, _args?: unknown): Promise<unknown> {
+    if (method === 'installFigure') {
+      await this.installFigurePack();
+      return this.panelSnapshot();
+    }
     if (method !== 'snapshot' && method !== '') {
       throw new Error(`没有这个方法：${method}`);
     }
@@ -149,6 +160,10 @@ export const toolMethods: Record<string, any> = {
       wants: wants.map((w) => ({ title: w.title, artist: w.artist })),
       today: { count: todayRecords.length, msText: todayMs > 0 ? humanDuration(todayMs) : '' },
       lamps: ui.lamps ?? [],
+      /* 形象包：面板上要有个「装」的按钮，就得知道现在是什么状态。 */
+      figure: this.figurePack
+        ? { status: this.figurePack.status, message: this.figurePack.message, dir: this.figurePack.dir }
+        : null,
       feedback: {
         repo: 'https://github.com/fateSSD/coopani-world-music',
         version: PANEL_VERSION,

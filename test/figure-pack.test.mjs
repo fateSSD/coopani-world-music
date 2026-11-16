@@ -125,3 +125,68 @@ test('真包能装进去 —— assets 就是发货的那一份，贴图必须�
   const count = readdirSync(r.dir, { recursive: true }).length;
   assert.ok(count > 400, `文件太少（${count}）—— 贴图没进包`);
 });
+
+/* ------------------------------------------------------------------
+ * 2026-11-16：载入时不装
+ *
+ * 官方在 `cortico-extensions#659` 里点名要求：不要 World 载入时自动安装，
+ * 改成面板上一个按钮。这两条钉住它 —— 谁把 `start()` 改回 `ensureFigurePack`，
+ * 第一条会红（`inspect` 不写盘这件事本身也得成立，否则灯报的状态就是装的借口）。
+ * ------------------------------------------------------------------ */
+
+import { inspectFigurePack } from '../src/figure-pack.ts';
+
+test('只看不装：inspect 一步盘都不写', async () => {
+  const data = tmp('inspect');
+  const src = makeSource(tmp('src'), '1.0.0');
+  const r = await inspectFigurePack({ dataDir: data, sourceDir: src });
+  assert.equal(r.status, 'missing');
+  assert.match(r.message, /按钮|面板/);
+  assert.equal(existsSync(join(data, 'figures', FIGURE_PACK_ID)), false, '光看一眼就把包装上了');
+  assert.equal(existsSync(join(data, 'figures')), false, '连 figures/ 都不该建');
+});
+
+test('装过之后 inspect 报的是真状态（不是「刚装过」）', async () => {
+  const data = tmp('inspect-ok');
+  const src = makeSource(tmp('src'), '2.0.0');
+  await ensureFigurePack(opts(data, src));
+  const same = await inspectFigurePack({ dataDir: data, sourceDir: src });
+  assert.equal(same.status, 'up-to-date');
+  assert.equal(same.version, '2.0.0');
+
+  const newer = makeSource(tmp('src-new'), '3.0.0');
+  const old = await inspectFigurePack({ dataDir: data, sourceDir: newer });
+  assert.equal(old.status, 'missing', '版本旧了要报 missing（该装），不能报 up-to-date');
+  assert.match(old.message, /2\.0\.0/);
+});
+
+
+test('force：同版本也重写一遍（包坏了靠它救）', async () => {
+  const data = tmp('force');
+  const src = makeSource(tmp('src'), '1.0.0');
+  const first = await ensureFigurePack(opts(data, src));
+  assert.equal(first.status, 'installed');
+  rmSync(join(first.dir, 'figure.js'));
+  const plain = await ensureFigurePack(opts(data, src));
+  assert.equal(plain.status, 'up-to-date');
+  assert.equal(existsSync(join(first.dir, 'figure.js')), false, '普通安装不该动它');
+  const forced = await ensureFigurePack({ ...opts(data, src), force: true });
+  assert.equal(forced.status, 'installed');
+  assert.equal(existsSync(join(first.dir, 'figure.js')), true, 'force 没有把包写回来');
+});
+
+test('残料清理：上次装到一半的临时目录不会让宿主看到两个同 id', async () => {
+  const data = tmp('stale');
+  const src = makeSource(tmp('src'), '1.0.0');
+  const root = join(data, 'figures');
+  const stale = join(root, `.${FIGURE_PACK_ID}-install-deadbeef`);
+  mkdirSync(stale, { recursive: true });
+  writeFileSync(join(stale, 'figure.json'), JSON.stringify({ manifest: 2, api: 2, id: FIGURE_PACK_ID, version: '0.9.0' }), 'utf8');
+  const alien = join(root, 'someone-else');
+  mkdirSync(alien, { recursive: true });
+
+  const r = await ensureFigurePack(opts(data, src));
+  assert.equal(r.status, 'installed');
+  assert.equal(existsSync(stale), false, '残料还在，宿主会报「id 已被另一个形象包占用」');
+  assert.equal(existsSync(alien), true, '别人的目录被顺手删了');
+});

@@ -47,6 +47,11 @@ const TEXT = {
     wantCount: (n) => `一共 ${n} 首`,
 
     lampsTitle: '灯',
+    figTitle: '形象包',
+    figInstall: '装形象包',
+    figReinstall: '重装形象包',
+    figInstalling: '正在装…',
+    figNote: '装了还要去换装页把她换成这个形象 —— 装好和用上是两步。重装会把这一格整个重写，包坏了就用它。',
     lampsIntro: '扩展名旁边那几盏灯现在是这样：',
     lampOn: '正常',
     lampOff: '没启用',
@@ -112,6 +117,11 @@ const TEXT = {
     wantCount: (n) => `${n} total`,
 
     lampsTitle: 'Lamps',
+    figTitle: 'Figure pack',
+    figInstall: 'Install figure pack',
+    figReinstall: 'Install again',
+    figInstalling: 'Installing…',
+    figNote: 'Installing is step one — you still pick it on the dress-up page. Installing again rewrites the whole folder, which fixes a broken copy.',
     lampsIntro: 'The dots next to the extension name right now:',
     lampOn: 'ok',
     lampOff: 'not enabled',
@@ -187,12 +197,15 @@ function mount(ctx) {
   const lampCard = el(doc, 'section', 'mu-card');
   const helpBox = el(doc, 'details', 'mu-help');
 
+  /* ---------------- 形象包：装了才有那组动作，所以给个按钮 ---------------- */
+  const figCard = el(doc, 'section', 'mu-card');
+
   /* ---------------- 反馈 ---------------- */
   const fbBox = el(doc, 'section', 'mu-fb');
 
   const foot = el(doc, 'footer', 'mu-foot', '');
 
-  app.append(head, cards, lampCard, helpBox, fbBox, foot);
+  app.append(head, cards, lampCard, figCard, helpBox, fbBox, foot);
 
   /* ---------------- 工具 ---------------- */
   const copyText = (text) => {
@@ -264,6 +277,46 @@ function mount(ctx) {
       ul.append(li);
     }
     lampCard.append(ul);
+  };
+
+  /**
+   * 形象包：状态 + 一个「装」的按钮。
+   *
+   * 为什么要有按钮：那组跟着拍子的动作只能由形象包声明，而形象包没地方发。
+   * 以前是**载入时就装**，官方明确要求改掉（`cortico-extensions#659`）：
+   * 「不要在 World 载入时自动安装，改成在 World 面板上放一个按钮」。
+   * 所以这里只画现状，装的动作等他点。
+   */
+  const drawFigure = (fig) => {
+    figCard.innerHTML = '';
+    if (!fig) { figCard.remove(); return; }
+    figCard.append(el(doc, 'h3', null, t.figTitle));
+    figCard.append(el(doc, 'p', 'mu-fig-msg', fig.message || ''));
+    /*
+     * 按钮**一直在**（2026-11-16 改）。
+     *
+     * 之前只在 `missing` 时画，结果装过一次的人打开面板什么都看不见 ——
+     * 他没法确认这一格是什么状态，也没法重装。现在按状态换字：
+     * 没装过是「装」，装过就是「重装」（`force` 会把整格重写，包坏了靠它救）。
+     * 只有「别人的包」（occupied）不给按钮：覆盖别人做的东西比装不上更糟。
+     */
+    const occupied = fig.status === 'occupied';
+    const btn = el(doc, 'button', 'mu-btn', fig.status === 'missing' ? t.figInstall : t.figReinstall);
+    btn.type = 'button';
+    btn.disabled = occupied;
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = t.figInstalling;
+      try {
+        render(await ctx.invoke('installFigure'));
+      } catch (err) {
+        fail(err);
+        btn.disabled = false;
+        btn.textContent = fig.status === 'missing' ? t.figInstall : t.figReinstall;
+      }
+    }, { signal: ctx.signal });
+    figCard.append(btn, el(doc, 'p', 'mu-fig-note', t.figNote));
   };
 
   const drawFeedback = (fb) => {
@@ -386,6 +439,7 @@ function mount(ctx) {
     }
 
     drawLamps(d.lamps);
+    drawFigure(d.figure);
 
     /* 反馈只画一次（版本和仓库是常量） */
     if (!fbBox.childElementCount) drawFeedback(d.feedback);

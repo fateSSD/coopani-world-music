@@ -900,11 +900,27 @@ test('表情池按路数×位置取；每格最多两个，且都在形象词表
   assert.ok(!poolIds('soft', 'intro').includes('sleepy'), '柔歌开头不给犯困，那是"听着听着睡了"的根');
 });
 
-test('夹具里的中文名与宿主 figure.json 一致（读不到就跳过）', () => {
-  const host = 'E:/Coopanion/resources/app/node_modules/cortico-world-desktop-pet/web/whale/figure.json';
-  if (!existsSync(host)) return;
-  const live = JSON.parse(readFileSync(host, 'utf8')).vocab;
-  const liveNames = new Map(live.map((v) => [v.id, v.names.zh ?? []]));
+test('夹具里的中文名与能在场的 figure.json 一致（读不到就跳过）', () => {
+  /*
+   * 来源是**两处**，因为认词的是「当前穿的那个形象包」：
+   * - 随扩展发的那一份（assets/figure-groove）：蹦迪/律动/打拍子这些我们自己实现的动作在这里；
+   * - 宿主自带的鲸鱼（web/whale）：基础表情在这里。
+   *
+   * 2026-11-16 之前这条只查宿主那一处，能过是因为当时的宿主文件被补丁改过（加了 12 个动作）。
+   * 补丁撤掉之后它立刻红了 —— 暴露的是这条断言一直照着错的源。两边都读才对。
+   */
+  const sources = [
+    new URL('../assets/figure-groove/figure.json', import.meta.url),
+    'E:/Coopanion/resources/app/node_modules/cortico-world-desktop-pet/web/whale/figure.json',
+  ].filter((f) => existsSync(f));
+  if (!sources.length) return;
+  const liveNames = new Map();
+  for (const f of sources) {
+    for (const v of JSON.parse(readFileSync(f, 'utf8')).vocab ?? []) {
+      // 先到先得：自家包那一份排在前面，它的中文名才是我们的口径
+      if (!liveNames.has(v.id)) liveNames.set(v.id, v.names?.zh ?? []);
+    }
+  }
   assert.deepEqual(
     [...VOCAB].filter((id) => !liveNames.has(id)),
     [],

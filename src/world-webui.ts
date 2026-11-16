@@ -258,11 +258,14 @@ export const webuiMethods: Record<string, any> = {
       return {
         label: '形象包',
         state: 'loading',
-        hint: '随包带了一个形象包，启动时装进 data/figures/groove/。还没开始 —— 等她启动；'
-          + '等不及就把扩展目录里的 assets/figure-groove 拷过去，再去换装页选。',
+        hint: '随包带了一个形象包，但载入时不装（装的动作要在面板上点）。点了之后装进 data/figures/groove/，'
+          + '装完还得去换装页把她选成这个形象 —— 装好和用上是两步。',
       };
     }
-    const state = pack.status === 'failed' ? 'error' : pack.status === 'occupied' ? 'offline' : 'online';
+    /* 未装（missing）和别人的包（occupied）都算「没启用」，不是故障；装失败才是故障。 */
+    const state = pack.status === 'failed'
+      ? 'error'
+      : (pack.status === 'occupied' || pack.status === 'missing' ? 'offline' : 'online');
     return { label: '形象包', state, hint: pack.message };
   },
 
