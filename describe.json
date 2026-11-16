@@ -146,11 +146,11 @@
               "meh",
               "no"
             ],
-            "description": "Whether you actually want to listen again: like / meh / no. Different from feel. Optional."
+            "description": "Whether you actually want to listen to it again: like = 喜欢，还想听；meh = 说不上，听到也行不听也行；no = 不喜欢。Different from feel. Optional."
           },
           "why": {
             "type": "string",
-            "description": "One short reason, in your own words. Optional."
+            "description": "One short reason for the verdict, in your own words. Optional."
           }
         },
         "required": [
@@ -161,8 +161,8 @@
         "write"
       ],
       "summary": {
-        "zh": "给正在放的这首标一个听感，之后按它换表情。",
-        "en": "Tags the current track with how it feels, so later reactions can match."
+        "zh": "给正在放的这首标一个听感与态度，之后按它换表情。",
+        "en": "Tags the current track with how it feels and whether you like it."
       }
     },
     {

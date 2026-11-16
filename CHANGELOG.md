@@ -1,5 +1,19 @@
 # 更新日志
 
+## 0.7.4 — 2026-11-16（describe.json 与代码对齐）
+
+在 journey 上踩到的坑，回头自查这一包也中了。宿主 `build/cortico/src/extensions/describe.ts`
+的注释原话：**索引仓的 Action 和 WebUI 的扩展市场只读 describe.json，不执行扩展代码**。
+而这份 JSON 一直是手抄的 —— 于是代码改了、JSON 没跟，**运行时不报错**，只有市场页面在骗人。
+
+- `music_tag` 漂了两处：`summary` 写的是「标一个听感」，实际还标态度（like / meh / no），
+  页面上完全看不出来；`verdict` 的说明也还是老措辞。
+- 全部从源码重新生成（10 工具 / 10 事件）。
+- 新增 `test/describe-sync.test.mjs`：工具名单 / description / summary / parameters、
+  事件名单 / trigger / 说明，全部与 `MUSIC_DESCRIBE` 逐一比对。改 `src/describe.ts`
+  忘了重生成，测试会红 —— 以后不用靠人记得。
+- 负向验过：改一个字、删一条事件都能抓住。
+
 ## 0.7.3 — 2026-11-16（按钮常驻，加「重装」）
 
 反馈来自同一个人：装过一次之后，面板上「形象包」那一格**什么按钮都没有**了 ——
