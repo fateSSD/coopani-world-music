@@ -30,6 +30,7 @@ test('工具声明：describe.json 的名单和说明必须和代码一字不差
     assert.equal(mirror.description, t.description, `${t.name} 的 description 漂了`);
     assert.deepEqual(mirror.summary, t.summary, `${t.name} 的 summary 漂了`);
     assert.deepEqual(mirror.parameters, t.parameters, `${t.name} 的 parameters 漂了`);
+    assert.deepEqual(mirror.tags ?? [], t.tags ?? [], `${t.name} 的 tags 漂了`);
   }
 });
 
@@ -43,6 +44,7 @@ test('事件声明：describe.json 的事件表和运行时一致', () => {
     const mirror = onDisk.events.find((x) => x.type === e.type);
     assert.equal(mirror.trigger, e.trigger, `${e.type} 的 trigger 两边不一致`);
     assert.deepEqual(mirror.description, e.description, `${e.type} 的说明漂了`);
+    assert.deepEqual(mirror.tags ?? [], e.tags ?? [], `${e.type} 的 tags 两边不一致`);
     assert.ok(e.description.zh.trim() && e.description.en.trim(), `${e.type} 少了说明`);
   }
 });

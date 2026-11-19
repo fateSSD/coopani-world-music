@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type {
-  Logger, StoragePart, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp,
+  EventEnvelope, Logger, StoragePart, ToolDef, TriggerMode, World, WorldHost, WorldWebUiDecl, WorldLamp,
 } from 'cortico/core/types.ts';
 import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.ts';
 import { ensureFigurePack, inspectFigurePack, type FigurePackResult } from './figure-pack.ts';
@@ -78,6 +78,10 @@ export * from './helpers.ts';
 import { toolMethods } from './world-tools.ts';
 import { hearingMethods } from './world-hearing.ts';
 import { webuiMethods } from './world-webui.ts';
+
+// 只给“尚未 render”的 deferred 一个保守租约：隐藏/lease 失效时宿主会静默丢弃，
+// 不 render 也不 settled。第一次 render 后租约立即撤销，之后只能由 settled 结算。
+const DEFERRED_UNRENDERED_LEASE_MS = 2 * 60_000;
 
 export interface MusicWorldOptions {
   cfg: MusicConfigSection;
@@ -199,6 +203,35 @@ export class MusicWorld implements World {
   private lastRepeatAt = 0;
   /** 上一次报过的总量（doneToday）。同一首的后一段不再重复报。 */
   private milestoneReported = 0;
+  /** 尚未确认投递的事件游标、归属曲目与播放代次，供切歌/停播时通过 withdrawPending 撤回。 */
+  private pendingCursors: Array<{ cursor: number; trackKey: string; epoch: number }> = [];
+  /** 每次推送都有独立 attempt，闭包绝不按可复用的 senderKey 互相覆盖。 */
+  private pendingAttemptSeq = 0;
+  /** 仅在事件真实 delivered 后才提交的一次性状态变更回调表（attemptKey -> commit）。 */
+  private pendingCommits = new Map<string, () => void>();
+  /** 排入未结算的取消释放钩子（render() 返 null 或 discarded 时恢复候选占位）。 */
+  private pendingRollbacks = new Map<string, () => void>();
+  /** 直接事件只能由 cursor 找到它自己的 attempt，不能信回执里可能串代的 senderKey。 */
+  private pendingCommitByCursor = new Map<number, string>();
+  /** deferred 尚无 cursor，宿主回执用这里登记的唯一 attempt senderKey 对账。 */
+  private pendingDeferredAttempts = new Set<string>();
+  /** 在途待结算（尚未 delivered 也未被 discarded/作废）的里程碑总量占位，防止同曲连发重复触发。 */
+  private pendingMilestone: { count: number; ownerKey: string } | null = null;
+  /**
+   * 仅「尚未 render」的 deferred attempt 的租约定时器。
+   *
+   * 隐藏 World（或宿主租约已失效）时 pushDeferred 会被静默丢弃：既不会 render，也不会有
+   * settled 回执。没有租约的话这条 attempt 会永久占着里程碑占位。首次 render 即撤销租约，
+   * 之后只等宿主 settled 结算，绝不按短超时把已经交付出去的事件判死。
+   */
+  private pendingLeases = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 未 render 租约时长。默认两分钟；测试可以调小以真跑一次到期回滚。 */
+  private deferredLeaseMs = DEFERRED_UNRENDERED_LEASE_MS;
+  /** 播放代次：每次切歌或停播时递增，拦截异步歌词等待期间已过期的在途 emit。 */
+  private playEpoch = 0;
+  /** 上一次采样看到的播放曲目键，用于识别切歌或暂停。 */
+  private lastSampledKey = '';
+  private lastSampledPlaying = false;
   /**
    * 接力点歌的状态（本机，不进记忆目录）。
    *
@@ -579,6 +612,9 @@ export class MusicWorld implements World {
 
   async stop(): Promise<void> {
     if (this.hearingTimer) { clearTimeout(this.hearingTimer); this.hearingTimer = null; }
+    // 未 render 租约只是兜底；停机时一并清掉，不留悬挂定时器。
+    for (const timer of this.pendingLeases.values()) clearTimeout(timer);
+    this.pendingLeases.clear();
     // 常驻分析器必须在这里关掉：卸载/停用后它还挂着，既占内存又留着一条 python 进程。
     this.stopHearingWorker();
     const tracker = this.tracker;
@@ -650,9 +686,20 @@ export class MusicWorld implements World {
     const pick = pickSession(payload.sessions, { player: cfg.player, extraPlayers: cfg.extraPlayers });
     this.lastPick = pick;
     if (pick.session?.status === 'playing') {
+      const k = trackKey(pick.session);
+      if (this.lastSampledKey && this.lastSampledKey !== k) {
+        this.playEpoch += 1;
+        this.withdrawStalePending(k);
+      }
+      this.lastSampledKey = k;
+      this.lastSampledPlaying = true;
       this.observeAudio(pick.session);
       // 边听边攒是后台任务：不 await，也不挡事件。
       this.maybeAutoHear(pick.session);
+    } else if (this.lastSampledPlaying) {
+      this.lastSampledPlaying = false;
+      this.playEpoch += 1;
+      this.withdrawStalePending('');
     }
     const result = active.feed(payload.ts, pick.session);
     if (result.finished) this.record(result.finished, payload.ts);
@@ -783,6 +830,38 @@ export class MusicWorld implements World {
     };
   }
 
+  private formatLyricDoc(
+    doc: { instrumental?: boolean; lines: { t: number; text: string }[] } | null | undefined,
+    mode: 'intro' | 'segment',
+    fromSec: number,
+    toSec: number,
+    strictWindow = false,
+  ): string {
+    if (!doc) return '';
+    // 走到这里说明**接口明确说了没有词**（只有网易云的 nolyric 会）。
+    // 抓取失败不会到这 —— 那种情况 doc 是 null。
+    if (doc.instrumental) return '词库那边标的这首没有词（纯音乐或无人声），别编词里的意思。';
+    const n = Math.max(1, Math.min(3, Math.trunc(this.cfg.lyricLines) || 2));
+    const picked = mode === 'intro'
+      ? linesFrom(doc.lines as never, 0, n)
+      : segmentLines(doc.lines as never, fromSec, toSec, n, !strictWindow);
+    const body = quoteLines(picked);
+    if (!body) return '';
+    const lead = mode === 'intro' ? '开头这几句' : '这一段唱的是';
+    return `${lead}：「${body}」。`;
+  }
+
+  private peekLyricCue(
+    track: Track,
+    mode: 'intro' | 'segment',
+    fromSec: number,
+    toSec: number,
+    strictWindow = false,
+  ): string {
+    if (!this.cfg.lyricAware) return '';
+    return this.formatLyricDoc(this.lyrics.peek(this.lyricInput(track)), mode, fromSec, toSec, strictWindow);
+  }
+
   private async lyricCue(
     track: Track,
     mode: 'intro' | 'segment',
@@ -790,8 +869,6 @@ export class MusicWorld implements World {
     toSec: number,
   ): Promise<string> {
     if (!this.cfg.lyricAware) return '';
-    const n = Math.max(1, Math.min(3, Math.trunc(this.cfg.lyricLines) || 2));
-
     const input = this.lyricInput(track);
     let doc = this.lyrics.peek(input);
     if (doc === undefined) {
@@ -801,21 +878,141 @@ export class MusicWorld implements World {
       ]);
       doc = got ?? this.lyrics.peek(input) ?? null;
     }
-    if (!doc) return '';
-    // 走到这里说明**接口明确说了没有词**（只有网易云的 nolyric 会）。
-    // 抓取失败不会到这 —— 那种情况 doc 是 null，上面已 return。
-    if (doc.instrumental) return '词库那边标的这首没有词（纯音乐或无人声），别编词里的意思。';
-
-    const picked = mode === 'intro'
-      ? linesFrom(doc.lines, 0, n)
-      : segmentLines(doc.lines, fromSec, toSec, n);
-    const body = quoteLines(picked);
-    if (!body) return '';
-
-    const lead = mode === 'intro' ? '开头这几句' : '这一段唱的是';
-    return `${lead}：「${body}」。`;
+    return this.formatLyricDoc(doc, mode, fromSec, toSec);
   }
 
+
+  private settlePendingAttempt(attemptKey: string, outcome: 'delivered' | 'discarded'): void {
+    const commitFn = this.pendingCommits.get(attemptKey);
+    const rollbackFn = this.pendingRollbacks.get(attemptKey);
+    this.pendingCommits.delete(attemptKey);
+    this.pendingRollbacks.delete(attemptKey);
+    this.pendingDeferredAttempts.delete(attemptKey);
+    const lease = this.pendingLeases.get(attemptKey);
+    if (lease !== undefined) {
+      clearTimeout(lease);
+      this.pendingLeases.delete(attemptKey);
+    }
+    if (outcome === 'delivered') commitFn?.();
+    else rollbackFn?.();
+  }
+
+  private settlePendingCursor(cursor: number, outcome: 'delivered' | 'discarded'): boolean {
+    // 游标先离表：撤回被确认时即使没有 attempt 映射，也不该继续留着等下一轮扫。
+    this.pendingCursors = this.pendingCursors.filter((x) => x.cursor !== cursor);
+    const attemptKey = this.pendingCommitByCursor.get(cursor);
+    if (attemptKey === undefined) return false;
+    // cursor 映射就是结算事务的锁：withdraw 与宿主回执谁先删掉它，谁负责且只负责一次结算。
+    this.pendingCommitByCursor.delete(cursor);
+    this.settlePendingAttempt(attemptKey, outcome);
+    return true;
+  }
+
+  /**
+   * 两参 `pushDeferred` 是现代 deferred/settled 流水线的能力哨兵：宿主会 render、
+   * 会给 `onEventsSettled` 回执。旧宿主没有这条流水线，`pushEvent` resolve 就是它能给的
+   * 全部信息，只能按「假定 delivered」结清，否则额度、水位与里程碑会永久卡在占位上。
+   */
+  private hostSupportsSettlement(host: WorldHost): boolean {
+    return typeof host.pushDeferred === 'function' && host.pushDeferred.length > 0;
+  }
+
+  private withdrawPendingCursor(host: WorldHost, cursor: number): void {
+    const fn = host.withdrawPending;
+    // 没有撤回通道时事件仍在队列里、迟早会 delivered：必须保留账目让它结算。
+    if (typeof fn !== 'function') return;
+    let withdrawal: Promise<boolean>;
+    try {
+      withdrawal = fn.call(host, cursor);
+    } catch {
+      // 同步抛错只是本地撤回失败，不能证明没投递：同样保留账目。
+      return;
+    }
+    void Promise.resolve(withdrawal).then(
+      // 只有 withdrawn === true 才证明事件已离队且绝不可能再 delivered；此时才可 rollback。
+      // false（已进入投递或不在队列）与 reject 都保留 cursor→attempt：迟到的真实 delivered
+      // 仍会、且只会 commit 一次，绝不因为撤回失败而误丢账。
+      (withdrawn) => { if (withdrawn === true) this.settlePendingCursor(cursor, 'discarded'); },
+      () => {},
+    );
+  }
+
+  private withdrawStalePending(keepTrackKey = ''): void {
+    const host = this.host;
+    if (!this.pendingCursors.length) return;
+    // 有明确新曲目时只撤绑定了其他曲目的待投事件，绝不误撤 trackKey === '' 的无曲目事件（如 fidget）
+    const toWithdraw = keepTrackKey
+      ? this.pendingCursors.filter((x) => x.trackKey !== '' && x.trackKey !== keepTrackKey)
+      : this.pendingCursors.slice();
+    if (!host) {
+      // 宿主已停：队列随宿主一起没了，不可能再有 delivered。
+      for (const item of toWithdraw) this.settlePendingCursor(item.cursor, 'discarded');
+      return;
+    }
+    // 不预先从 pendingCursors 移除：撤回 false/reject 时要保留账目，等真实 delivered 结算。
+    for (const item of toWithdraw) this.withdrawPendingCursor(host, item.cursor);
+  }
+
+  private recordPushStamp(tsMs: number): void {
+    this.lastTextAt = localClock(this.opts.timezone, tsMs);
+    this.pushStamps.push(tsMs);
+    if (this.pushStamps.length > 6) this.pushStamps.shift();
+  }
+
+  onEventsSettled(events: readonly EventEnvelope[], outcome?: 'delivered' | 'discarded'): void {
+    if (!events.length) return;
+    const settled = new Set(events.map((e) => e.cursor));
+    if (this.pendingCursors.length) {
+      this.pendingCursors = this.pendingCursors.filter((x) => !settled.has(x.cursor));
+    }
+    let recorded = false;
+    for (const ev of events) {
+      // 直接事件只认 cursor。旧 A 的回执即使带着与新 B 相同的 senderKey，也绝不能结算 B。
+      const directSettled = this.settlePendingCursor(ev.cursor, outcome === 'delivered' ? 'delivered' : 'discarded');
+      if (!directSettled && ev.senderKey && this.pendingDeferredAttempts.has(ev.senderKey)) {
+        // deferred 入队时没有 cursor，唯一 attempt senderKey 就是它与回执之间的游标。
+        this.settlePendingAttempt(ev.senderKey, outcome === 'delivered' ? 'delivered' : 'discarded');
+      }
+      if (outcome === 'delivered' && !recorded) {
+        this.recordPushStamp(Date.now());
+        recorded = true;
+      }
+    }
+  }
+
+  onHandoffEnded(): void {
+    const host = this.host;
+    if (!host) return;
+    const st = this.tracker?.state();
+    if (!st?.playing || !st.track) return;
+    const keyNow = trackKey(st.track);
+    const renderSnapshot = (): string | null => {
+      const cur = this.tracker?.state();
+      if (!cur?.playing || !cur.track || trackKey(cur.track) !== keyNow) return null;
+      const label = playerLabel(cur.track.app, this.cfg.extraPlayers);
+      const stamp = localClock(this.opts.timezone, Date.now());
+      return `[${stamp}] 正在放 ${quote(cur.track, label)}（这一场已连听 ${humanDuration(cur.sessionPlayedMs)}）。`;
+    };
+    if (typeof host.pushDeferred === 'function') {
+      host.pushDeferred({
+        type: 'music.handoff',
+        senderKey: 'music.handoff',
+        tags: ['snapshot'],
+        render: () => renderSnapshot(),
+      }, { trigger: 'piggyback' });
+    } else {
+      const text = renderSnapshot();
+      if (!text) return;
+      void host.pushEvent({
+        type: 'music.handoff',
+        source: this.id,
+        senderKey: 'music.handoff',
+        ts: new Date().toISOString(),
+        text,
+        tags: ['snapshot'],
+      }, { trigger: 'piggyback' }).catch(() => null);
+    }
+  }
 
   private async emit(signal: Signal, at: number): Promise<void> {
     const host = this.host;
@@ -824,6 +1021,8 @@ export class MusicWorld implements World {
     if (!decl) return;
     if (!this.shouldSpeak(signal)) return;
 
+    const emitEpoch = this.playEpoch;
+    const evTrackKey = 'track' in signal ? trackKey(signal.track) : '';
     const tz = this.opts.timezone;
     const stamp = localClock(tz, at);
     // 只有 fidget 不带 track（"他连着跳了好几首"说的是人，不是某一首）。
@@ -837,6 +1036,12 @@ export class MusicWorld implements World {
     }
     let text = '';
     let senderKey = '';
+    let pendingAttemptKey = '';
+    let trigger: TriggerMode = decl.trigger;
+    let deferredTrackKey = '';
+    let renderDeferredSegment: (() => string | null) | null = null;
+    let pendingCommit: (() => void) | null = null;
+    let pendingRollback: (() => void) | null = null;
 
     switch (signal.kind) {
       case 'start': {
@@ -896,7 +1101,7 @@ export class MusicWorld implements World {
         const rawMove = moveIdAny(vibe.feel, null, this.lastMove, false, lively);
         const landed = degradeMove(rawMove);
         const move = landed ? (MOVE_WORD[landed] ?? '') : '';
-        if (landed) this.lastMove = landed;
+        if (landed) pendingCommit = () => { this.lastMove = landed; };
         const trackHead = primary
           ? `【${primary}${move ? `, ${move}` : ''}】`
           : (move ? `【${move}】` : '');
@@ -959,218 +1164,334 @@ export class MusicWorld implements World {
         // 段事件是"陪听"的节拍器：她每段都该说一句，所以这条要带上
         // 这一段落在歌曲的哪个位置、是第几段、共几段——否则几条一模一样的歌名
         // 会让她把同一句话说几遍。
-        //
-        // 还带上"今天的量"和"这一场多久"：这不是装饰。实测第 2 段她只动了个表情不说话，
-        // 因为除了歌名她手上没有任何新事实。"这一场第 3 首、连着 12 分钟、今天 5 首"
-        // 就是她"说他"那一段唯一能踩的实地。
         const total = this.cfg.maxSegmentsPerTrack > 0
           ? `，这一首最多 ${this.cfg.maxSegmentsPerTrack} 段`
           : '';
-        const posText = signal.posSec !== null
-          ? `${clockOf(signal.posSec)}${signal.durSec ? ` / ${clockOf(signal.durSec)}` : ''}`
-          : clockOf(signal.toSec);
         const st = this.tracker?.state();
         const today = this.store?.readDay(localDay(this.opts.timezone, at)) ?? [];
         const doneToday = today.length;
         const artist = signal.track.artist;
         const artistTimes = artist ? today.filter((r) => r.artist === artist).length + 1 : 0;
         const angle = talkAngle(signal.indexInSession, doneToday);
-        // 里程碑：只有这一刻才许说"今天多少首"。
-        // talkAngle 已经把"报总量"那一格锁在里程碑上，但**事实本身还在无节制地喂**——
-        // 实测 listen.27 跑下来，她仍然是「九首了」「八首了」「第五首了」「十三首」，
-        // 那些数全是从 index>=3 那支的"这个歌手今天第 N 首"里抠出来的。
-        // 角度管住了"问什么"，管不住"手上有什么"，所以还得把料一起掐断。
         const milestone = doneToday > 0 && doneToday % COUNT_MILESTONE === 0;
-        // 里程碑只报一次：一首歌三段，段 2 报完段 3 又报，等于把"隔十几首说一次"变回"每段都说"。
-        const freshMilestone = milestone && this.milestoneReported !== doneToday;
-        if (freshMilestone) this.milestoneReported = doneToday;
-        // 段 2 一次只给一样实据（四首一循环），其余段照旧全给。
-        // 差别不是"少说点字"，是"少给一张可抄的表"：四样并排摆出来，她必然抄成
-        // 「第 N 首，八点二十一」这种台账。给一样，她才不得不自己组织一句话。
-        //
-        // 分派必须和数据"是一路的"：第一版让角度 2（说人）在没重复歌手时去拿
-        // 「今天已收尾 38 首」兜底，结果问题问她"他认准了谁"，数据给的是个量——
-        // 她只能拿这个量硬凑。现在每格只拿配得上的那样，拿不到就明说没有。
-        const context = signal.index === 2
-          ? ([
-            freshMilestone ? `今天已收尾 ${doneToday} 首` : '',
-            st ? `连着听了 ${humanDuration(st.sessionPlayedMs)}` : '',
-            // "说他"这一格的实据不是"第几首"，是"他今天一直在放这一个嗓子"。
-            // 数量只在里程碑给一次，平时给描述——她要的是能接话的细节，不是一个计数。
-            artistTimes > 1
-              ? (freshMilestone ? `这个歌手今天第 ${artistTimes} 首` : `他今天一直在放 ${artist}`)
-              : '',
-            '',
-          // 兜底原来写的是"这一次没有数字可报"，但落在"说人"那格时她认成
-          // "没数字所以随便说"——21:47 她说的是"换了好几把嗓子"，其实还行，
-          // 但措辞暗示了"这一句本该有数字"。改成明说这一句不要实据。
-          ][angle] || '这一句不用实据，说你自己看到的就行')
-          : freshMilestone
-            // 里程碑那一段只给这一件。21:37:36 实测过：场次 + 时长 + 总量 + 歌手计数
-            // 四样一起摆出来，她立刻又排成一行账。给一件，她才得自己组织一句话。
-            ? `今天已收尾 ${doneToday} 首`
-            : [
-              // 场次计数只在前两首有意义（刚起场，"这是这一场第 1 首"），之后就是台账。
-              signal.indexInSession <= 2 ? `这一场第 ${signal.indexInSession} 首` : '',
-              st ? `连着听了 ${humanDuration(st.sessionPlayedMs)}` : '',
-            ].filter(Boolean).join('、');
-        // 这一段是什么路数、落在歌的哪个位置——这两个一起决定表情和语气。
-        // 路数三档来源：她标过 → 字面弱判 → 未标。未标时明确写"还没标"，
-        // 不能默认成"柔"：那会让她对着一首金属说"这首很温柔"。
         const vibe = this.vibeOf(signal.track);
-        const phase = signal.phase;
-        // 长曲（古典、现场、组曲）只报前后，不报"副歌"——那套段落名对它们不成立。
-        const longform = isLongform(signal.durSec);
-        const where = phase
-          ? `，${longform ? LONGFORM_NOTE[phase] : PHASE_NOTE[phase]}`
-          : '，位置未知';
-        // 欢快的柔：曲风名认得出来就是欢快的，认不出看 BPM。它同时决定三件事——
-        // 不给坐姿动作、不许说困、候选里剔掉坐姿。声明必须在 ask 之前，stateAngle 要用。
         const lively = isLivelySoft(vibe.feel, vibe.genre, this.audioFeatures.summary());
         const ask = signal.index === 2
-          // 第 4 格按曲风分版：柔歌里可以困，其余照旧不许。见 stateAngle()。
           ? (angle === 3 ? stateAngle(vibe.feel, lively) : TALK_ANGLES[angle])
           : SEGMENT_ASK[Math.min(SEGMENT_ASK.length, Math.max(1, signal.index)) - 1];
-        // 表情这句以前写的是"你要是没有，换成最接近的一张，别不发"——这句是个坑：
-        // 它等于允许她改词，而她一旦不确定（"鲸鱼词表里有思考吗"）就会真的去换，
-        // 换上来的永远是【开心】，五档听感全塌成一张脸。现在改成不许换、不许译。
-        //
-        // "别译成英文"是 listen.16 补的：给了中文名，她还是把【开心】写成【happy】。
-        // 英文 id 词表里其实认（figure.json 的 id 就是英文），但只要她一边写英文一边
-        // 怀疑"鲸鱼有没有这张脸"，就会退回【开心】。让她原样抄，这条岔路直接堵死。
-        //
-        // "第一张是定的"是 listen.17 补的：listen.16 跑下来，柔/副歌给了【喜欢】她照抄了，
-        // 旧/主歌给了【思考】或【得意】，她写"这歌我吃，想起小时候的下午"配【happy】——
-        // 她是按句子的情绪挑脸，不是按路数。所以现在把第一张写成硬要求，第二张降成"顶多换"。
-        // 位置不明时表情退到中段那一格（不报高低点，但至少有一张脸）。
-        // 不空着的原因同 fallbackMove()：网易云的古典全没有位置，空着就等于整首歌都没有脸。
-        const pool = poolIds(vibe.feel, phase ?? 'verse');
-        const primary = pool.length ? wordText(pool[0]) : '';
-        const alt = pool.length > 1 ? wordText(pool[1]) : '';
-        // 动作按"路数 × 位置"配。为什么要写进事件正文而不是只写 ENV_PROMPT：
-        // 实测过，光写在提示词里她不照着做，正文里点了名她才用。
-        //
-        // 第三个参数是"上一次下发的动作"：抒情歌的副歌和桥段都落在 groove 上，
-        // 一首歌连着两段【律动】、换首歌还是【律动】，身体看上去像卡住了
-        // （实测 21:20 / 21:23 / 21:24 连着三次）。撞了就换同档的备选。
-        //
-        // 现在是把它**并进表情那个括号**，而不是另起一句"动作配【蹦迪】"让她再发一条
-        // pet_act —— 后者她漏过一次（21:44:39 只说了话，人站着没动）。
-        // 同上：避让用原 id，发出去和记下来的都是降级后的实际 id。
-        // 「坐得住」由场合判，不由她判。两个条件都只有 World 知道，她的句子里永远不会提到：
-        //   1. 已经连着听了 20 分钟以上 —— 听得够久，坐下来听完是自然的；
-        //   2. 深夜（23 点后或 5 点前）—— 这个点还在放柔歌，本来就是坐下来听的场合。
-        //
-        // 只认第 1 条不够：core 一重启，sessionPlayedMs 归零，规则要再等二十分钟才生效，
-        // 而"深夜"这个条件不因为重启而消失。2026-10-29 00:29 实测踩到的就是这个——
-        // 刚重启完，连听时长是 0，明明该坐下却还站着。
         const DEEP_MS = 20 * 60_000;
-        const nightNow = (() => { const h = new Date().getHours(); return h >= 23 || h < 5; })();
-        const deep = (!!st && st.sessionPlayedMs >= DEEP_MS) || nightNow;
-        const rawMove = moveIdAny(vibe.feel, phase, this.lastMove, deep, lively);
-        const landed = degradeMove(rawMove);
-        const move = landed ? (MOVE_WORD[landed] ?? '') : '';
-        // ⚠ 这里记的是**我们算出来的首选**，不是她最后挑的那个 —— 候选制下她可以在四个里换，
-        // 而她的 `pet_say` 走的是 Core 的工具通道，World 收不到，所以拿不到实际动作。
-        // 后果：避让对"上一次首选"有效，对"上一次实际动作"失效。实测 23:18 首选应援、她挑蹦迪，
-        // 下一轮就按应援来避让，可能连着给她同一个实际动作。
-        // 不修是因为改不了（架构上拿不到她的输出），且候选制本身已经让变化发生。
-        if (landed) this.lastMove = landed;
-        const emoji = primary
-          ? `脚本开头原样写 【${primary}】——表情照抄这个。`
-            + choiceText(moveChoices(vibe.feel, move, lively), primary, SEGMENT_SPECIAL)
-            + `${alt ? `表情顶多换成【${alt}】。` : ''}`
-            + `抄中文别译英文；这张脸是按这首的劲儿定的，不按你这句话的情绪挑。`
-          // 同上：表情空了不能把动作一起吞掉。
-          : choiceText(moveChoices(vibe.feel, move, lively), '', SEGMENT_SPECIAL);
-        void move;
-        // 第 1 段顺带请她标一下：这一段她本来就要认这首歌。标一次，后面两段和以后
-        // 同一首都不用再想，表情也就不会再前后打架。
-        // 措辞里不放"路数"两个字——她抄一个词，下一句气泡里就多一个术语。
         const tagAsk = vibe.source === 'none' && signal.index === 1
           ? '认得这首就顺手 music_tag 标一下。'
           : '';
-        // 一次性纠偏，见 vocabHint() 的注释。
-        const hint = this.vocabHint();
-        // 段 2 要防的第二件事是"抄时间戳"。正文开头那个 [20:21] 是给她对表用的，
-        // 她直接念成"八点二十一"，于是九首歌九次「第 N 首，八点二十一」。
-        // 角度 1 允许说"一个多小时"这种粗的时长，但不许报钟点。
         const noClock = signal.index === 2
           ? '开头那个 [时:分] 是给你对表用的，别念进话里。'
           : '';
-        // 歌词：这一段落里刚唱过的几句。她"陪听"能说出内容全靠这一行料。
-        // 只给这一段区间，不给"此刻那一句"——见 lyrics.ts 的 segmentLines 注释。
-        const lyricSeg = await this.lyricCue(signal.track, 'segment', signal.fromSec, signal.toSec);
-        const hasWords = !!lyricSeg && !lyricSeg.startsWith('这首的');
-        // 这一段之前攒下的深听档案。没有就不提——她不该以为自己分析过。
-        // 走向没变就不重复给她：同一首歌的后两段会拿到一模一样的一句话，她会照抄两遍。
-        const sheetNow = sheetShort(this.hearingSheets.get(trackKey(signal.track)));
+        const initialLyricSeg = await this.lyricCue(signal.track, 'segment', signal.fromSec, signal.toSec);
         const sheetKey = trackKey(signal.track);
-        const sheetLine = sheetNow && (sheetKey !== this.lastSheetKey || sheetNow !== this.lastSheetLine)
-          ? sheetNow
-          : '';
-        if (sheetNow) { this.lastSheetKey = sheetKey; this.lastSheetLine = sheetNow; }
-        // 复读检测：把她这一场自己说过的原话拿回来做骨架比对（见 repeatHint 的注释）。
-        // 没有重复就返回空串，正文不多一个字。同一条提示十分钟内只给一次——她要是没改，
-        // 每段都刷一遍反成了噪音；她改过之后提示内容会变，会重新出现。
-        const sayHintRaw = repeatHint(this.recentSays());
-        const sayHint = sayHintRaw
-          && (sayHintRaw !== this.lastRepeatHint || at - this.lastRepeatAt > 10 * 60_000)
-          ? sayHintRaw
-          : '';
-        if (sayHint) { this.lastRepeatHint = sayHintRaw; this.lastRepeatAt = at; }
-        // 留痕：这条链路（事件库 → 骨架比对 → 事件正文）如果断了，日志里会一条都没有。
-        // 「她怎么又复读了」先查这里有没有打出来。
-        if (sayHint) this.log?.info(`复读提示：${sayHint}`);
-        // 2026-11-08：正文原来写「路数：柔（华语流行）。语气：轻、慢，字少」，她会
-        // 把「路数」「这一档」原样搬进气泡（实测 10-27「软了一档」、10-30 与 11-08
-        // 两次「这一档…」、10-26/11-04「这个路数」）。根源在输入这一端：我给的是表格，
-        // 她自然按表格说话。改成自然句，她拿到手的就已经是能说出口的说法。
-        text = `[${stamp}] ${quote(signal.track, label)} 放到 ${posText}${where}。`
-          + (vibe.source === 'none'
-            ? '这首还没标。'
-            : `这首偏${FEEL_TEXT[vibe.feel]}${vibe.genre ? `（${vibe.genre}）` : ''}`
-              + `${['album', 'artist', 'audio'].includes(vibe.source) ? `——${vibe.reason}` : ''}。`
-              + `说话${FEEL_TONE[vibe.feel]}。`)
-          + this.audioPerceptionLine()
-          + (sheetLine ? `${sheetLine}` : '')
-          + `这一首走到第 ${signal.index} 段（${clockOf(signal.fromSec)} → ${clockOf(signal.toSec)}${total}）${context ? `，${context}` : ''}`
-          + `${signal.loopCount >= 2 ? `，这次收听里的第 ${signal.loopCount} 遍` : ''}。`
-          + (lyricSeg ? `${lyricSeg}` : '')
-          + `（${ask}${noClock ? ` ${noClock}` : ''}${hasWords ? ' 词在上面：要评就落到那一句上，挑一句用，别把两句都念出来。' : ''}${emoji ? ` ${emoji}` : ''}${tagAsk ? ` ${tagAsk}` : ''}）`
-          + (sayHint ? `\n${sayHint}` : '')
-          + (hint ? `\n${hint}` : '');
-        // 同一场、同一首、同一段只该出现一次。带场次起点是为了让"第 3 段"在另一场里不被当成同一条。
-        senderKey = `music.segment:${trackKey(signal.track)}:${st?.sessionStartedAt ?? 0}:${signal.index}`;
+        const expectedSession = st?.sessionStartedAt ?? null;
+        senderKey = `music.segment:${sheetKey}:${st?.sessionStartedAt ?? 0}:${signal.index}`;
+        pendingAttemptKey = `${senderKey}#attempt:${++this.pendingAttemptSeq}`;
+        deferredTrackKey = sheetKey;
+
+        const buildSegmentPayload = (
+          renderMs: number,
+          livePosSec: number | null,
+          liveDurSec: number | null,
+          liveSessionPlayedMs: number | undefined,
+          isInitialBuild: boolean,
+        ): {
+          text: string;
+          hasWords: boolean;
+          hasSheet: boolean;
+          commit: () => void;
+          arm: () => void;
+          rollback: () => void;
+        } => {
+          const curStamp = localClock(tz, renderMs);
+          const curPosText = livePosSec !== null
+            ? `${clockOf(livePosSec)}${liveDurSec ? ` / ${clockOf(liveDurSec)}` : ''}`
+            : '位置未知';
+          // 当前采样说 null 就是不知道：不得回退到入队时的进度和相位，把旧副歌当成现在。
+          const curPhase = phaseOf(livePosSec, liveDurSec);
+          const longform = isLongform(liveDurSec);
+          const whereNow = curPhase
+            ? `，${longform ? LONGFORM_NOTE[curPhase] : PHASE_NOTE[curPhase]}`
+            : (livePosSec !== null && liveDurSec === null ? '，位置未知' : '');
+          const freshMilestoneNow = milestone
+            && this.milestoneReported !== doneToday
+            && (!this.pendingMilestone || this.pendingMilestone.count !== doneToday || this.pendingMilestone.ownerKey === pendingAttemptKey);
+          const pool = poolIds(vibe.feel, curPhase ?? 'verse');
+          const primary = pool.length ? wordText(pool[0]) : '';
+          const alt = pool.length > 1 ? wordText(pool[1]) : '';
+          const nightNow = (() => { const h = new Date(renderMs).getHours(); return h >= 23 || h < 5; })();
+          const deep = (typeof liveSessionPlayedMs === 'number' && liveSessionPlayedMs >= DEEP_MS) || nightNow;
+          const rawMove = moveIdAny(vibe.feel, curPhase ?? null, this.lastMove, deep, lively);
+          const landed = degradeMove(rawMove);
+          const move = landed ? (MOVE_WORD[landed] ?? '') : '';
+          const emoji = primary
+            ? `脚本开头原样写 【${primary}】——表情照抄这个。`
+              + choiceText(moveChoices(vibe.feel, move, lively), primary, SEGMENT_SPECIAL)
+              + `${alt ? `表情顶多换成【${alt}】。` : ''}`
+              + `抄中文别译英文；这张脸是按这首的劲儿定的，不按你这句话的情绪挑。`
+            : choiceText(moveChoices(vibe.feel, move, lively), '', SEGMENT_SPECIAL);
+          void move;
+          const sheetNow = sheetShort(this.hearingSheets.get(sheetKey));
+          const sheetLineNow = sheetNow && (sheetKey !== this.lastSheetKey || sheetNow !== this.lastSheetLine)
+            ? sheetNow
+            : '';
+          const sayHintRaw = repeatHint(this.recentSays());
+          const sayHintNow = sayHintRaw
+            && (sayHintRaw !== this.lastRepeatHint || renderMs - this.lastRepeatAt > 10 * 60_000)
+            ? sayHintRaw
+            : '';
+          const hintNow = this.peekVocabHint();
+          const phaseChanged = Boolean(curPhase && signal.phase && curPhase !== signal.phase);
+          const outOfEnqueueWindow = livePosSec !== null && (livePosSec < signal.fromSec - 5 || livePosSec > signal.toSec + 5);
+          let lyricSegNow = '';
+          if (isInitialBuild) {
+            lyricSegNow = initialLyricSeg;
+          } else if (livePosSec !== null && liveDurSec !== null && !phaseChanged && !outOfEnqueueWindow) {
+            lyricSegNow = this.peekLyricCue(signal.track, 'segment', signal.fromSec, signal.toSec) || initialLyricSeg;
+          } else if (livePosSec !== null) {
+            const wFrom = Math.max(0, Math.round(livePosSec) - 25);
+            const wTo = Math.round(livePosSec) + 25;
+            lyricSegNow = this.peekLyricCue(signal.track, 'segment', wFrom, wTo, true);
+          }
+          const hasWordsNow = !!lyricSegNow && !lyricSegNow.startsWith('这首的');
+          const contextNow = signal.index === 2
+            ? ([
+              freshMilestoneNow ? `今天已收尾 ${doneToday} 首` : '',
+              typeof liveSessionPlayedMs === 'number' ? `连着听了 ${humanDuration(liveSessionPlayedMs)}` : '',
+              artistTimes > 1
+                ? (freshMilestoneNow ? `这个歌手今天第 ${artistTimes} 首` : `他今天一直在放 ${artist}`)
+                : '',
+              '',
+            ][angle] || '这一句不用实据，说你自己看到的就行')
+            : freshMilestoneNow
+              ? `今天已收尾 ${doneToday} 首`
+              : [
+                signal.indexInSession <= 2 ? `这一场第 ${signal.indexInSession} 首` : '',
+                typeof liveSessionPlayedMs === 'number' ? `连着听了 ${humanDuration(liveSessionPlayedMs)}` : '',
+              ].filter(Boolean).join('、');
+          const curToSec = livePosSec !== null ? Math.max(signal.toSec, Math.round(livePosSec)) : signal.toSec;
+          const body = `[${curStamp}] ${quote(signal.track, label)} 放到 ${curPosText}${whereNow}。`
+            + (vibe.source === 'none'
+              ? '这首还没标。'
+              : `这首偏${FEEL_TEXT[vibe.feel]}${vibe.genre ? `（${vibe.genre}）` : ''}`
+                + `${['album', 'artist', 'audio'].includes(vibe.source) ? `——${vibe.reason}` : ''}。`
+                + `说话${FEEL_TONE[vibe.feel]}。`)
+            + this.audioPerceptionLine()
+            + (sheetLineNow ? `${sheetLineNow}` : '')
+            + `这一首走到第 ${signal.index} 段（${clockOf(signal.fromSec)} → ${clockOf(curToSec)}${total}）${contextNow ? `，${contextNow}` : ''}`
+            + `${signal.loopCount >= 2 ? `，这次收听里的第 ${signal.loopCount} 遍` : ''}。`
+            + (lyricSegNow ? `${lyricSegNow}` : '')
+            + `（${ask}${noClock ? ` ${noClock}` : ''}${hasWordsNow ? ' 词在上面：要评就落到那一句上，挑一句用，别把两句都念出来。' : ''}${emoji ? ` ${emoji}` : ''}${tagAsk ? ` ${tagAsk}` : ''}）`
+            + (sayHintNow ? `\n${sayHintNow}` : '')
+            + (hintNow ? `\n${hintNow}` : '');
+          const commit = (): void => {
+            if (freshMilestoneNow) {
+              this.milestoneReported = doneToday;
+              if (this.pendingMilestone?.ownerKey === pendingAttemptKey) this.pendingMilestone = null;
+            }
+            if (landed) this.lastMove = landed;
+            if (sheetNow) { this.lastSheetKey = sheetKey; this.lastSheetLine = sheetNow; }
+            if (sayHintNow) { this.lastRepeatHint = sayHintRaw; this.lastRepeatAt = renderMs; this.log?.info(`复读提示：${sayHintNow}`); }
+            if (hintNow) this.commitVocabHint();
+          };
+          const arm = (): void => {
+            if (freshMilestoneNow) this.pendingMilestone = { count: doneToday, ownerKey: pendingAttemptKey };
+          };
+          const rollback = (): void => {
+            if (freshMilestoneNow && this.pendingMilestone?.ownerKey === pendingAttemptKey) this.pendingMilestone = null;
+          };
+          return { text: body, hasWords: hasWordsNow, hasSheet: Boolean(sheetLineNow), commit, arm, rollback };
+        };
+
+        const initialBuilt = buildSegmentPayload(at, signal.posSec, signal.durSec, st?.sessionPlayedMs, true);
+        text = initialBuilt.text;
+        initialBuilt.arm();
+        pendingCommit = initialBuilt.commit;
+        pendingRollback = initialBuilt.rollback;
+        const hasWords = initialBuilt.hasWords;
+        const sheetLine = initialBuilt.hasSheet;
+        renderDeferredSegment = () => {
+          let outstandingRollback = this.pendingRollbacks.get(pendingAttemptKey);
+          const rollbackPrevious = (): void => {
+            const fn = outstandingRollback;
+            outstandingRollback = undefined;
+            fn?.();
+          };
+          this.pendingCommits.delete(pendingAttemptKey);
+          this.pendingRollbacks.delete(pendingAttemptKey);
+          try {
+            if (this.playEpoch !== emitEpoch) {
+              rollbackPrevious();
+              this.pendingDeferredAttempts.delete(pendingAttemptKey);
+              return null;
+            }
+            const cur = this.tracker?.state();
+            if (!cur?.playing || !cur.track || trackKey(cur.track) !== deferredTrackKey) {
+              rollbackPrevious();
+              this.pendingDeferredAttempts.delete(pendingAttemptKey);
+              return null;
+            }
+            if (expectedSession !== null && cur.sessionStartedAt !== null && cur.sessionStartedAt !== expectedSession) {
+              rollbackPrevious();
+              this.pendingDeferredAttempts.delete(pendingAttemptKey);
+              return null;
+            }
+            if (typeof cur.segmentsSaid === 'number' && cur.segmentsSaid > 0 && cur.segmentsSaid !== signal.index) {
+              rollbackPrevious();
+              this.pendingDeferredAttempts.delete(pendingAttemptKey);
+              return null;
+            }
+            const built = buildSegmentPayload(
+              Date.now(),
+              cur.posSec,
+              cur.durSec,
+              cur.sessionPlayedMs,
+              false,
+            );
+            // 新闭包可能从 fresh=false 变为 true：先释放旧占位，再 arm 并完整替换 commit/rollback。
+            rollbackPrevious();
+            built.arm();
+            this.pendingCommits.set(pendingAttemptKey, built.commit);
+            this.pendingRollbacks.set(pendingAttemptKey, built.rollback);
+            return built.text;
+          } catch (error) {
+            rollbackPrevious();
+            this.pendingDeferredAttempts.delete(pendingAttemptKey);
+            throw error;
+          }
+        };
+        if (signal.index >= 2 && signal.phase !== 'chorus' && !hasWords && !sheetLine) {
+          trigger = 'piggyback';
+        }
         break;
       }
     }
-    if (!text) return;
-
-    // 让路：开关打开、并且炉石在跑，就不主动开口。
-    //
-    // 让的是「主动播报」这一层 —— 被戳时的回答走工具调用，不经过这里，所以照样会答。
-    // 默认关：两件事同时进行、各说各的，很多人就喜欢那样，不该由我们替他们决定。
-    // 顺带记一行日志：以后有人说「她怎么不说话了」，先看这里是不是让路了。
-    if (this.cfg.yieldToHearthstone && await isPeerRunning(['Hearthstone.exe'])) {
-      this.log?.info(`炉石在跑，${decl.type} 让路（不主动开口）。`);
-      return;
-    }
-
+    if (senderKey && !pendingAttemptKey) pendingAttemptKey = `${senderKey}#attempt:${++this.pendingAttemptSeq}`;
+    if (pendingCommit) this.pendingCommits.set(pendingAttemptKey, pendingCommit);
+    if (pendingRollback) this.pendingRollbacks.set(pendingAttemptKey, pendingRollback);
+    // arm() 之后只有两个结局：交给宿主等待 delivered/discarded 结算，或在这里完整回滚。
+    // 让路、切代、push 抛错都走同一个 finally，绝不把 pendingMilestone 留给下一段。
+    let handedOff = false;
+    const rollbackNotHandedOff = (): void => {
+      if (pendingAttemptKey) this.settlePendingAttempt(pendingAttemptKey, 'discarded');
+      else pendingRollback?.();
+    };
     try {
-      await host.pushEvent({
-        type: decl.type,
-        source: this.id,
-        senderKey,
-        ts: new Date(at).toISOString(),
-        text,
-      }, { trigger: decl.trigger });
-      this.lastTextAt = stamp;
-      this.pushStamps.push(Date.now());
-      if (this.pushStamps.length > 6) this.pushStamps.shift();
-      this.log?.info(`推送 ${decl.type}：${text.slice(0, 80)}`);
+      if (!text) return;
+
+      // 让路：开关打开、并且炉石在跑，就不主动开口。
+      //
+      // 让的是「主动播报」这一层 —— 被戳时的回答走工具调用，不经过这里，所以照样会答。
+      // 默认关：两件事同时进行、各说各的，很多人就喜欢那样，不该由我们替他们决定。
+      // 顺带记一行日志：以后有人说「她怎么不说话了」，先看这里是不是让路了。
+      if (this.cfg.yieldToHearthstone && await isPeerRunning(['Hearthstone.exe'])) {
+        this.log?.info(`炉石在跑，${decl.type} 让路（不主动开口）。`);
+        return;
+      }
+
+      // 异步歌词等待或炉石进程探测期间若已切歌/停播，当场丢弃过期事件，既不晚到补发也不误撤新歌游标
+      if (emitEpoch !== this.playEpoch) {
+        this.log?.info(`跳过已过期的异步事件 ${decl.type}（播放代次 ${emitEpoch} → ${this.playEpoch}）`);
+        return;
+      }
+      if (evTrackKey && this.lastSampledKey && this.lastSampledKey !== evTrackKey) {
+        this.log?.info(`跳过已切走的旧曲事件 ${decl.type}（${evTrackKey}）`);
+        return;
+      }
+      if (signal.kind === 'track' || signal.kind === 'start') {
+        this.withdrawStalePending(evTrackKey);
+      }
+      if (signal.kind === 'segment' && typeof host.pushDeferred === 'function' && host.pushDeferred.length > 0 && deferredTrackKey && renderDeferredSegment) {
+        const renderFn = renderDeferredSegment;
+        this.pendingDeferredAttempts.add(pendingAttemptKey);
+        // 隐藏 World 的 pushDeferred 会被宿主静默丢弃：不 render、不 settled。给未 render 的
+        // attempt 一个保守租约，到期还没被 render 就当场回滚，避免里程碑占位永久泄漏。
+        // 一旦 render 过，租约立即撤销——已交付的事件只等 settled，绝不按短超时判死。
+        const lease = setTimeout(() => {
+          this.pendingLeases.delete(pendingAttemptKey);
+          if (!this.pendingDeferredAttempts.has(pendingAttemptKey)) return;
+          this.log?.info(`${decl.type} 未 render 租约到期（隐藏 World 或宿主丢弃），回滚占位。`);
+          this.settlePendingAttempt(pendingAttemptKey, 'discarded');
+        }, this.deferredLeaseMs);
+        // 租约只是兜底：绝不能因为它让进程/测试挂住。
+        lease.unref?.();
+        this.pendingLeases.set(pendingAttemptKey, lease);
+        const renderWithinLease = () => {
+          const armed = this.pendingLeases.get(pendingAttemptKey);
+          if (armed !== undefined) {
+            clearTimeout(armed);
+            this.pendingLeases.delete(pendingAttemptKey);
+          }
+          return renderFn();
+        };
+        host.pushDeferred({
+          type: decl.type,
+          senderKey: pendingAttemptKey,
+          tags: ['snapshot'],
+          render: renderWithinLease,
+        }, { trigger });
+        handedOff = true;
+        this.log?.info(`排队 ${decl.type}（deferred）：${text.slice(0, 80)}`);
+      } else {
+        const env = await host.pushEvent({
+          type: decl.type,
+          source: this.id,
+          senderKey,
+          ts: new Date(at).toISOString(),
+          text,
+          ...(signal.kind === 'segment' ? { tags: ['snapshot'] as const } : {}),
+        }, { trigger });
+        if (!env || typeof env.cursor !== 'number') {
+          // 两参 pushDeferred 是现代 deferred/settled 流水线的能力哨兵（与 life 同判据）。
+          // 现代宿主契约里 pushEvent 必带 cursor，缺了就是异常：没有游标可对账，
+          // 当场回滚占位，绝不把账目挂成永不结算的幽灵。
+          if (this.hostSupportsSettlement(host)) {
+            this.log?.warn(`${decl.type} 未返回游标，现代宿主下无法对账，回滚占位。`);
+            return;
+          }
+          // 旧宿主：pushEvent resolve 即已落库，但回执永远不会来。保留占位既关不掉账、
+          // 又会让里程碑与动作账永远停在"已说未结算"，下一段还会重复同一笔 ——
+          // 按技能契约明确假定 delivered，一次性结清。
+          this.log?.warn(`${decl.type} 未返回游标（旧宿主无 settled），按假定 delivered 结清占位。`);
+          handedOff = true;
+          this.settlePendingAttempt(pendingAttemptKey, 'delivered');
+          this.log?.info(`推送 ${decl.type}：${text.slice(0, 80)}`);
+          return;
+        }
+        this.pendingCursors.push({ cursor: env.cursor, trackKey: evTrackKey, epoch: emitEpoch });
+        this.pendingCommitByCursor.set(env.cursor, pendingAttemptKey);
+        handedOff = true;
+        // 隐藏 World 的即时事件只归档（contextDelivery=archive-only），不进上下文也没有 delivered
+        // 回执；直接回滚占位，别让里程碑被一条永远不会投递的事件占住。
+        if (env.contextDelivery === 'archive-only') {
+          this.log?.info(`${decl.type} 归档但不投递（隐藏 World），回滚占位。`);
+          this.settlePendingCursor(env.cursor, 'discarded');
+          return;
+        }
+        if (emitEpoch !== this.playEpoch || (evTrackKey && this.lastSampledKey && this.lastSampledKey !== evTrackKey)) {
+          // 已离代：能撤回就撤回（只有 true 才算撤掉），撤不掉也保留账目等真实 delivered。
+          this.withdrawPendingCursor(host, env.cursor);
+          return;
+        }
+        while (this.pendingCursors.length > 32) {
+          const oldest = this.pendingCursors[0];
+          if (!oldest) break;
+          if (oldest.cursor === env.cursor) break;
+          this.withdrawPendingCursor(host, oldest.cursor);
+          // 撤回失败时 withdrawPendingCursor 会保留账目，这里也必须避免死循环：
+          // 直接移出「旧游标扫描表」，结算仍按 cursor 映射进行。
+          this.pendingCursors.shift();
+        }
+        this.log?.info(`推送 ${decl.type}：${text.slice(0, 80)}`);
+      }
     } catch (error) {
       this.log?.warn(`推送 ${decl.type} 失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (!handedOff) rollbackNotHandedOff();
     }
   }
 
@@ -1229,7 +1550,11 @@ export class MusicWorld implements World {
         ...LYRIC_DECL,
         handler: async (args) => ({ text: await this.lyricText(Number(args.ahead ?? 0)) }),
       },
-      { ...LISTEN_DECL, handler: async () => ({ text: await this.hearingText() }) },
+      {
+        ...LISTEN_DECL,
+        interruptible: true,
+        handler: async (_args, ctx) => ({ text: await this.hearingText(ctx?.signal) }),
+      },
     ];
   }
 
@@ -1250,17 +1575,20 @@ export class MusicWorld implements World {
    * 那条"系统通知"。所以这里用同样的口吻发一条系统更正，一个数据目录只发一次。
    * 想再发一次，删掉 data 目录下的 vocab-hint.done 即可。
    */
-  private vocabHint(): string {
+  private peekVocabHint(): string {
     const flag = join(this.opts.dataDir, 'vocab-hint.done');
     if (existsSync(flag)) return '';
-    try {
-      writeFileSync(flag, new Date().toISOString(), 'utf8');
-    } catch {
-      return '';
-    }
     return '（系统更正：你的词表不止八张脸。换形象时那条"这些词用不了了、新增了以下"，说的是'
       + '被换下去的那个形象，不是现在这张。现在这张鲸鱼的表里 19 个表情 + 18 个动作全在：'
       + '思考、得意、嘟嘴、疑惑、认真、星星眼、慌张、害怕、大哭、平静、眨眼都算数，写上去就会做。）';
+  }
+
+  private commitVocabHint(): void {
+    const flag = join(this.opts.dataDir, 'vocab-hint.done');
+    if (existsSync(flag)) return;
+    try {
+      writeFileSync(flag, new Date().toISOString(), 'utf8');
+    } catch { /* ignore */ }
   }
 
   private loadState(): {

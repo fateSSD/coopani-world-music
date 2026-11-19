@@ -394,16 +394,21 @@ export function linesFrom(lines: readonly LyricLine[], sec: number, count: numbe
  * 为什么要这段区间而不是"此刻那一句"：段事件的语义是"这一段你听完了，说说"。
  * 只给此刻那一句，她会把整个四十五秒的评价压在一句上，听起来像在解说歌词；
  * 给这一段唱过的，她才在说"这一段"。
+ *
+ * 延迟渲染切到新相位时传 `backfill = false`：那是当前位置的实时窗口，不是入队时的
+ * 历史段，窗口里有几句就只能给几句，绝不能拿旧段的歌词凑满。
  */
 export function segmentLines(
   lines: readonly LyricLine[],
   fromSec: number,
   toSec: number,
   count: number,
+  backfill = true,
 ): LyricLine[] {
   const sorted = dedupe(lines);
   if (!sorted.length) return [];
   const n = Math.max(1, Math.trunc(count));
+  if (!backfill) return sorted.filter((l) => l.t >= fromSec && l.t <= toSec).slice(-n);
   const upTo = sorted.filter((l) => l.t <= toSec);
   // 整段都落在前奏里（还没开口）：给开头几句，别让她以为没词。
   if (!upTo.length) return sorted.slice(0, n);

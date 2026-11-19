@@ -192,7 +192,7 @@ export interface LocalAnalysis {
  * 逐行比，不要拼接窗口：±25 秒拼成一整段之后，「一」「情」「流水」这类公共二字词
  * 会让任何一句都拿到 0.3，等于没有区分度（2026-11-06 实测踩到）。
  */
-const speechNorm = (s: string): string =>
+export const speechNorm = (s: string): string =>
   (s || '').replace(/[\s。、，,.!?！？…・「」『』()（）\[\]【】ー~～\-—:：;；'"’”‘“]/g, '').toLowerCase();
 
 export function speechSim(heard: string, lyric: string): number {

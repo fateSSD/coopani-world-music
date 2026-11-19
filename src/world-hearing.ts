@@ -69,12 +69,27 @@ export * from './describe.ts';
 
 import {
   autoHearDue, type SayShape, sayShape, repeatHint, type LocalAnalysis,
-  speechSim, stateAngle, talkAngle, isLivelySoft, moveChoices, choiceText,
+  speechNorm, speechSim, stateAngle, talkAngle, isLivelySoft, moveChoices, choiceText,
   setHostVocab, degradeMove, primaryMove, moveIdOf, fallbackMove, moveIdAny,
   moveCue, moveCueAny, skipSignal, recentDays, shortDay, quote,
 } from './helpers.ts';
 export * from './helpers.ts';
 
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(Boolean(signal?.aborted));
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 export const hearingMethods: Record<string, any> = {
   /* ================= 深听：两条路，一份档案 ================= */
@@ -112,7 +127,8 @@ export const hearingMethods: Record<string, any> = {
    * 请求文件是门控：探针平时一个字节都不写，看到这个文件才从环形缓冲里切 12 秒出来。
    * 9 秒等不到就放弃——多半是采集刚重启，干等只会让气泡更慢。
    */
-  async captureWav(): Promise<{ ok: true; wav: string } | { ok: false; reason: string }> {
+  async captureWav(signal?: AbortSignal): Promise<{ ok: true; wav: string } | { ok: false; reason: string }> {
+    if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
     const dir = dirname(AUDIO_OUT_FILE);
     const request = join(dir, 'coopani-hearing.request');
     const wav = join(dir, 'coopani-hearing.wav');
@@ -122,11 +138,20 @@ export const hearingMethods: Record<string, any> = {
       writeFileSync(request, '', 'utf8');
       const started = Date.now();
       while (Date.now() - started < 9000) {
+        if (signal?.aborted) {
+          quietRemove(request);
+          quietRemove(wav);
+          return { ok: false, reason: '已打断，本次深听取消' };
+        }
         try {
           // 请求被消费、WAV 完整落盘，才算就绪。
           if (!existsSync(request) && existsSync(wav) && statSync(wav).size > 20_000) return { ok: true, wav };
         } catch { /* 文件正在换手 */ }
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        if (await abortableSleep(150, signal)) {
+          quietRemove(request);
+          quietRemove(wav);
+          return { ok: false, reason: '已打断，本次深听取消' };
+        }
       }
       return { ok: false, reason: '没等到声音切片（采集可能刚重启，或者这会儿没在输出声音）' };
     } catch (error) {
@@ -139,8 +164,10 @@ export const hearingMethods: Record<string, any> = {
     wav: string,
     resultFile: string,
     ctx: { at: number; posSec: number | null; seconds: number },
+    signal?: AbortSignal,
   ): Promise<{ ok: true; slice: HearingSlice } | { ok: false; reason: string }> {
-    const run = await new Promise<{ err: string; timedOut: boolean }>((resolve) => {
+    if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
+    const run = await new Promise<{ err: string; timedOut: boolean; aborted?: boolean }>((resolve) => {
       // 唱词转写只在两件事同时成立时才加 --asr：配置里开了，且走的是本地这条路。
       // `!== false` 是有意的：老配置文件里没有这个键，缺省必须是「开」，
       // 写成 truthy 判断的话，升级完所有人的 ASR 会静默不生效。
@@ -159,24 +186,36 @@ export const hearingMethods: Record<string, any> = {
       // 结果走文件，stdout 不解析；但必须接住，不然出错时是静默失败。
       child.stdout?.on('data', () => { /* 分析器的 stdout 是同一份 JSON，用不上 */ });
       child.stderr?.on('data', (b: Buffer) => { err = (err + b.toString('utf8')).slice(-4000); });
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.killHearingTree(child);
+        resolve({ err, timedOut: false, aborted: true });
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        signal?.removeEventListener('abort', onAbort);
         this.killHearingTree(child);
         resolve({ err, timedOut: true });
       }, 55_000);
       child.on('error', (e) => {
         if (settled) return;
         settled = true; clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         resolve({ err: `${err}\n${e.message}`, timedOut: false });
       });
       child.on('exit', () => {
         if (settled) return;
         settled = true; clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         resolve({ err, timedOut: false });
       });
     });
 
+    if (run.aborted || signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
     if (run.timedOut) return { ok: false, reason: '本机分析超过 55 秒还没跑完，已经停掉' };
     if (!existsSync(resultFile)) {
       return { ok: false, reason: `本机分析没产出结果${run.err ? `：${run.err.trim().slice(0, 160)}` : ''}` };
@@ -200,24 +239,30 @@ export const hearingMethods: Record<string, any> = {
     wav: string,
     resultFile: string,
     ctx: { at: number; posSec: number | null; seconds: number },
+    signal?: AbortSignal,
   ): Promise<{ ok: true; slice: HearingSlice } | { ok: false; reason: string }> {
-    const viaWorker = await this.localSliceViaWorker(wav, ctx);
+    if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
+    const viaWorker = await this.localSliceViaWorker(wav, ctx, signal);
+    if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
     if (viaWorker) return viaWorker;
-    return this.localSliceOneShot(wav, resultFile, ctx);
+    return this.localSliceOneShot(wav, resultFile, ctx, signal);
   },
 
   /** 常驻进程那条路。返回 null = 这条走不通，让上层去兜底。 */
   async localSliceViaWorker(
     wav: string,
     ctx: { at: number; posSec: number | null; seconds: number },
+    signal?: AbortSignal,
   ): Promise<{ ok: true; slice: HearingSlice } | { ok: false; reason: string } | null> {
+    if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
     if (this.hearingWorkerFails >= 3) return null;
     const asrOn = this.cfg.asrEnabled !== false;
     const data = await this.askHearingWorker({
       wav,
       asr: asrOn,
       asr_cross: asrOn && this.cfg.asrCrossCheck ? (this.cfg.asrWhisperTier || 'medium') : '',
-    });
+    }, 90_000, signal);
+    if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
     if (!data) return null;
     this.hearingWorkerFails = 0;
     return this.localDataToSlice(data as LocalAnalysis, ctx);
@@ -288,27 +333,41 @@ export const hearingMethods: Record<string, any> = {
   askHearingWorker(
     req: Record<string, unknown>,
     timeoutMs = 90_000,
+    signal?: AbortSignal,
   ): Promise<Record<string, unknown> | null> {
+    if (signal?.aborted) return Promise.resolve(null);
     const child = this.ensureHearingWorker();
     if (!child?.stdin) return Promise.resolve(null);
     if (this.hearingWorkerPending) this.failHearingWorker(new Error('上一个请求还没回来'));
     return new Promise((resolve) => {
+      const finish = (val: Record<string, unknown> | null) => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(val);
+      };
+      const onAbort = () => {
+        clearTimeout(timer);
+        this.hearingWorkerPending = null;
+        this.killHearingTree(child);
+        if (this.hearingWorker === child) this.hearingWorker = null;
+        finish(null);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
       const timer = setTimeout(() => {
         this.hearingWorkerPending = null;
         this.killHearingTree(child);
         if (this.hearingWorker === child) this.hearingWorker = null;
         this.hearingWorkerFails += 1;
         this.log?.warn(`分析器 ${Math.round(timeoutMs / 1000)} 秒没回，已杀掉重启`);
-        resolve(null);
+        finish(null);
       }, timeoutMs);
-      this.hearingWorkerPending = { resolve, reject: () => resolve(null), timer };
+      this.hearingWorkerPending = { resolve: (v) => finish(v), reject: () => finish(null), timer };
       try {
         child.stdin!.write(`${JSON.stringify(req)}\n`);
       } catch (error) {
         clearTimeout(timer);
         this.hearingWorkerPending = null;
         this.log?.warn(`给分析器发请求失败：${error instanceof Error ? error.message : String(error)}`);
-        resolve(null);
+        finish(null);
       }
     });
   },
@@ -413,7 +472,7 @@ export const hearingMethods: Record<string, any> = {
    * 云端和本地共用同一个 request 文件和同一个 WAV，并发只会互相踩。
    */
   async listenOnce(
-    ctx: { at: number; posSec: number | null },
+    ctx: { at: number; posSec: number | null }, signal?: AbortSignal,
   ): Promise<{ ok: true; slice: HearingSlice } | { ok: false; reason: string }> {
     const mode = this.hearingMode();
     if (mode === 'off') return { ok: false, reason: '深听关着（设置 → 一起听歌 → 深听方式）' };
@@ -433,32 +492,42 @@ export const hearingMethods: Record<string, any> = {
           + '要么切成「本地」——本地要下约 500MB，但之后完全在本机跑、不联网',
       };
     }
+    if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
     if (this.hearingBusy) return { ok: false, reason: '上一段还没分析完' };
     this.hearingBusy = true;
     const dir = dirname(AUDIO_OUT_FILE);
     const resultFile = join(dir, 'coopani-hearing.json');
     try {
-      let cap = await this.captureWav();
+      let cap = await this.captureWav(signal);
       if (!cap.ok) return cap;
+      if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
       let seconds = this.wavSeconds(cap.wav);
       if (seconds < MIN_SLICE_SEC) {
         // 采集进程刚重启时环形缓冲是空的，切出来只有两三秒 —— 拿这个算调性纯属瞎猜。
         // 宁可多等四秒重切一次：她这一句晚几秒，比说出一个错调子好。
-        await new Promise((resolve) => setTimeout(resolve, 4500));
-        const again = await this.captureWav();
+        if (await abortableSleep(4500, signal)) {
+          return { ok: false, reason: '已打断，本次深听取消' };
+        }
+        const again = await this.captureWav(signal);
+        if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
         if (again.ok) {
           const longer = this.wavSeconds(again.wav);
           if (longer > seconds) { cap = again; seconds = longer; }
         }
       }
       if (mode === 'cloud') {
-        return await cloudListen(cap.wav, {
+        const model = (this.cfg.hearingCloudModel ?? '').trim() || 'qwen-omni-turbo';
+        const res = await cloudListen(cap.wav, {
           base: (this.cfg.hearingCloudBase ?? '').trim(),
-          model: (this.cfg.hearingCloudModel ?? '').trim() || 'qwen-omni-turbo',
+          model,
           key: (this.cfg.hearingCloudKey ?? '').trim(),
-        }, { ...ctx, seconds });
+        }, { ...ctx, seconds }, signal);
+        if (res.usage) {
+          try { this.host?.reportUsage?.(res.usage, { model, label: 'music:hearing' }); } catch { /* 忽略上报异常 */ }
+        }
+        return res;
       }
-      return await this.localSlice(cap.wav, resultFile, { ...ctx, seconds });
+      return await this.localSlice(cap.wav, resultFile, { ...ctx, seconds }, signal);
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : String(error) };
     } finally {
@@ -566,7 +635,7 @@ export const hearingMethods: Record<string, any> = {
    * 探针内存里始终有最近 12 秒，收到 request 才写一个临时 WAV，读完即删。
    * 结果会并进这首的档案——所以每问一次，她的理解往前进一段，不是从头再来。
    */
-  async hearingText(): Promise<string> {
+  async hearingText(signal?: AbortSignal): Promise<string> {
     if (!this.cfg.audioReactive) return '音频感知关着，深听听不到。开开「跟随系统声音」再用。';
     const st = this.tracker?.state();
     const track = st?.track;
@@ -576,7 +645,10 @@ export const hearingMethods: Record<string, any> = {
       return `${this.hearingCache.text}（20 秒内刚听过，直接复用这次结果）`;
     }
 
-    const res = await this.listenOnce({ at: Date.now(), posSec: st.posSec });
+    const res = await this.listenOnce({ at: Date.now(), posSec: st.posSec }, signal);
+    if (signal?.aborted) {
+      return '已打断，本次深听取消。';
+    }
     if (!res.ok) {
       const before = this.hearingSheets.get(key);
       return `这次深听没做成：${res.reason}。${before ? `\n\n${sheetText(before)}` : ''}`;

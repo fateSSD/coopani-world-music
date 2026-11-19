@@ -9,7 +9,8 @@
         "properties": {}
       },
       "tags": [
-        "read"
+        "read",
+        "snapshot"
       ],
       "summary": {
         "zh": "现在在放什么、放了多久、以及读不到时为什么读不到。",
@@ -222,7 +223,7 @@
     },
     {
       "name": "music_soul",
-      "description": "Your own taste file — who you are as a listener, in your own words. Read it with no arguments. Call it when he asks what you like, when a song tells you something about your own taste you did not know before, or when you catch yourself contradicting what is already written there. **All four sections have to actually get used.** Only filling love while the other three stay empty is bookkeeping half a taste — the owner called this out on 2026-11-03 (\"only the ones she likes, the other three are missing\"). A track that made you frown belongs in hate; \"fine, but I would not put it on again\" belongs in tolerate; \"cannot tell whether it is the song or the moment\" belongs in unsure. A complaint said once in a bubble and never written down is gone by tomorrow. The bar for hate: it genuinely made you frown, and you can name the kind — not \"I did not feel like it today\". Write one short first-person line at a time (`add`), or remove one that no longer holds (`drop`). Not a log of what he played: that is music_taste.",
+      "description": "Your own taste file — who you are as a listener, in your own words. Read it with no arguments. Call it when he asks what you like, when a song tells you something about your own taste you did not know before, or when you catch yourself contradicting what is already written there. **All four sections have to actually get used.** Only filling love while the other three stay empty is bookkeeping half a taste — the owner called this out on 2026-11-03 (\"only likes recorded, the other three are missing\"). A track that made you frown belongs in hate; \"fine, but I would not put it on again\" belongs in tolerate; \"cannot tell whether it is the song or the moment\" belongs in unsure. A complaint said once in a bubble and never written down is gone by tomorrow. The bar for hate: it genuinely made you frown, and you can name the kind — not \"I did not feel like it today\". Write one short first-person line at a time (`add`), or remove one that no longer holds (`drop`). Not a log of what he played: that is music_taste.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -252,8 +253,8 @@
         "write"
       ],
       "summary": {
-        "zh": "读/写她自己的口味档案（我爱听什么，第一人称）。",
-        "en": "Reads and writes her own taste file."
+        "zh": "读/写自己的听歌口味档案（我爱听什么，第一人称）。",
+        "en": "Reads and writes your own taste file."
       }
     },
     {
@@ -328,13 +329,16 @@
         "zh": "这一首又走完一段（每首最多 3 段，短歌约一分钟一段，长曲按曲长拉开），可以就这一段说一句。",
         "en": "Another passage of the current track went by (at most three per track); a cue to comment on this stretch."
       },
-      "trigger": "debounce"
+      "trigger": "debounce",
+      "tags": [
+        "snapshot"
+      ]
     },
     {
       "type": "music.relay",
       "description": {
-        "zh": "她自己点的那一首快放完了，该把下一首递过去。",
-        "en": "The track she picked is nearly over; time to hand over the next one."
+        "zh": "你点的那一首快放完了，该把下一首递过去。",
+        "en": "The track you picked is nearly over; time to hand over the next one."
       },
       "trigger": "flush"
     },
@@ -353,6 +357,17 @@
         "en": "Deep-listening status changed: newly usable (once per build), or unusable (missing cloud key / local engine not installed, at most daily). The text says how to use it and that it overrides the older \"never describe specific sound\" rule."
       },
       "trigger": "flush"
+    },
+    {
+      "type": "music.handoff",
+      "description": {
+        "zh": "用户交接（handoff）结束时顺路搭车（piggyback）补齐当前正在播放的曲目与场次时长快照。",
+        "en": "Piggybacked playback snapshot after user handoff ends, refreshing the active track and session duration."
+      },
+      "trigger": "piggyback",
+      "tags": [
+        "snapshot"
+      ]
     }
   ]
 }

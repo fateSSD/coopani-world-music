@@ -1,5 +1,21 @@
 # 更新日志
 
+## 1.0.0 — 2026-11-19（Harness 对齐与深听报错修复）
+
+- **P0 修复 `speechNorm is not defined`**：导出 `helpers.ts` 的 `speechNorm` 并在 `world-hearing.ts` 显式导入，彻底根治自动深听命中 `checkSpeechMatch` 时的 `ReferenceError`；补充回归单测。
+- **ENV_PROMPT 大幅瘦身**：从 13,496 字符压至 2,200 余字符（删去与 `tools()` 重复的工具清单与强迫每段必说话的命令式指令），保留全部占位符与词表护栏。
+- **Harness 原语对齐**：
+  - `music.segment` 接入 `host.pushDeferred`（并在切歌或暂停时由 `render()` 返回 `null` 自动取消、配合 `host.withdrawPending` + `playEpoch` 播放代次与按 `trackKey` 过滤撤回未投递旧游标，保留同批 `loop/night/long` 事件，拦截异步查词期间已切走的过期 `emit`）；无歌词/无深听的后续平缓段降级 `piggyback`；
+  - 新增 `onHandoffEnded()`（独立 `music.handoff` 事件，`piggyback` + `['snapshot']` 延迟重算最新连听时长与曲目）与 `onEventsSettled()` 清理已结算游标；
+  - `music_now` 增加 `'snapshot'` 标签，`music_listen` 支持 `interruptible: true` 与 `ctx.signal` 全链路取消（含 `captureWav`、4.5 秒重切等待、常驻/一次性本地分析进程终止及落盘前拦截）；
+  - 云端深听 `cloudListen` 捕获真实 token 用量并通过 `host.reportUsage()` 上报；
+  - 清理 `describe.ts` / `describe.json` 残留第三人称并重新同步。
+- **结算账目修正（第四轮复审）**：
+  - `withdrawPending` 只有明确返回 `true` 才按撤回结算并回滚占位；返回 `false`、抛错或没有撤回通道时保留 `cursor → attempt` 账目，迟到的真实 `delivered` 仍会且只会提交一次，不再把撤回失败误当成丢弃；
+  - 隐藏 World（或宿主租约失效）的 `pushDeferred` 会被静默丢弃：未 render 的 attempt 给两分钟保守租约，到期仍未 render 才回滚；一旦 render 立即撤销租约，之后只等 `settled`，不按短超时判死；
+  - 隐藏 World 的 `pushEvent` 返回 `contextDelivery: 'archive-only'`（只归档不投递）时当场回滚占位，不登记一条永远等不到回执的游标；
+  - `pushEvent` 未返回游标时按宿主能力分流：两参 `pushDeferred` 的现代宿主视为异常、当场回滚；旧宿主没有 settled 流水线，按技能契约假定 delivered 一次性结清，避免里程碑、动作与深听账目永久卡在占位上反复重报。
+
 ## 0.7.4 — 2026-11-16（describe.json 与代码对齐）
 
 在 journey 上踩到的坑，回头自查这一包也中了。宿主 `build/cortico/src/extensions/describe.ts`

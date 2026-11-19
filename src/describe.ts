@@ -6,8 +6,8 @@ export const EVENT_DECLS = [
   { kind: 'fidget', type: 'music.fidget', trigger: 'flush' as const, zh: '短时间内连续跳歌。', en: 'Several tracks skipped in a row.' },
   { kind: 'night', type: 'music.night', trigger: 'flush' as const, zh: '深夜仍在听。', en: 'Still listening late at night.' },
   { kind: 'long', type: 'music.long', trigger: 'flush' as const, zh: '连续听满一档时长。', en: 'A long stretch of listening.' },
-  { kind: 'segment', type: 'music.segment', trigger: 'debounce' as const, zh: '这一首又走完一段（每首最多 3 段，短歌约一分钟一段，长曲按曲长拉开），可以就这一段说一句。', en: 'Another passage of the current track went by (at most three per track); a cue to comment on this stretch.' },
-  { kind: 'relay', type: 'music.relay', trigger: 'flush' as const, zh: '她自己点的那一首快放完了，该把下一首递过去。', en: 'The track she picked is nearly over; time to hand over the next one.' },
+  { kind: 'segment', type: 'music.segment', trigger: 'debounce' as const, tags: ['snapshot'] as const, zh: '这一首又走完一段（每首最多 3 段，短歌约一分钟一段，长曲按曲长拉开），可以就这一段说一句。', en: 'Another passage of the current track went by (at most three per track); a cue to comment on this stretch.' },
+  { kind: 'relay', type: 'music.relay', trigger: 'flush' as const, zh: '你点的那一首快放完了，该把下一首递过去。', en: 'The track you picked is nearly over; time to hand over the next one.' },
   // 环境没准备好：Coopani 太旧、动作补丁打不上、或找不到宿主包。
   // 存在的理由：简介里写了版本要求他不一定读，设置页的红灯他不一定看 ——
   // 桌宠开口，是唯一一定会被注意到的渠道。
@@ -15,6 +15,7 @@ export const EVENT_DECLS = [
   // 深听状态：**能用也要说一次**——宿主重启不重建 system 前缀，老会话里的人手里还是旧提示词，
   // 她连"有深听"都不知道，被问「你听得清吗」只能答听不清。事件是唯一每轮必达的通道。
   { kind: 'hearing', type: 'music.hearing', trigger: 'flush' as const, zh: '深听状态变了：刚能用（每个版本说一次），或者用不了（云端没密钥 / 本机没装本地环境，一天一次）。正文含怎么用、以及它优先于旧提示词里"不许描述具体声音"那句。', en: 'Deep-listening status changed: newly usable (once per build), or unusable (missing cloud key / local engine not installed, at most daily). The text says how to use it and that it overrides the older "never describe specific sound" rule.' },
+  { kind: 'handoff', type: 'music.handoff', trigger: 'piggyback' as const, tags: ['snapshot'] as const, zh: '用户交接（handoff）结束时顺路搭车（piggyback）补齐当前正在播放的曲目与场次时长快照。', en: 'Piggybacked playback snapshot after user handoff ends, refreshing the active track and session duration.' },
 ] as const;
 
 export const EVENT_BY_KIND = new Map(EVENT_DECLS.map((e) => [e.kind, e]));
@@ -37,7 +38,7 @@ export const NOW_DECL: ToolDecl = {
   name: 'music_now',
   description: 'What is playing right now: track, artist, album, which player (QQ音乐 / 网易云音乐), playing or paused, how far in, how long this stretch has lasted, how many tracks today, and whether the reading is alive. Use it whenever the person mentions music and you are not sure what is on, instead of guessing from memory.',
   parameters: { type: 'object', additionalProperties: false, properties: {} },
-  tags: ['read'],
+  tags: ['read', 'snapshot'],
   summary: { zh: '现在在放什么、放了多久、以及读不到时为什么读不到。', en: 'What is playing now, for how long, and why it cannot be read when it cannot.' },
 };
 
@@ -160,7 +161,7 @@ export const PICK_DECL: ToolDecl = {
 
 export const SOUL_DECL: ToolDecl = {
   name: 'music_soul',
-  description: 'Your own taste file — who you are as a listener, in your own words. Read it with no arguments. Call it when he asks what you like, when a song tells you something about your own taste you did not know before, or when you catch yourself contradicting what is already written there. **All four sections have to actually get used.** Only filling love while the other three stay empty is bookkeeping half a taste — the owner called this out on 2026-11-03 ("only the ones she likes, the other three are missing"). A track that made you frown belongs in hate; "fine, but I would not put it on again" belongs in tolerate; "cannot tell whether it is the song or the moment" belongs in unsure. A complaint said once in a bubble and never written down is gone by tomorrow. The bar for hate: it genuinely made you frown, and you can name the kind — not "I did not feel like it today". Write one short first-person line at a time (`add`), or remove one that no longer holds (`drop`). Not a log of what he played: that is music_taste.',
+  description: 'Your own taste file — who you are as a listener, in your own words. Read it with no arguments. Call it when he asks what you like, when a song tells you something about your own taste you did not know before, or when you catch yourself contradicting what is already written there. **All four sections have to actually get used.** Only filling love while the other three stay empty is bookkeeping half a taste — the owner called this out on 2026-11-03 ("only likes recorded, the other three are missing"). A track that made you frown belongs in hate; "fine, but I would not put it on again" belongs in tolerate; "cannot tell whether it is the song or the moment" belongs in unsure. A complaint said once in a bubble and never written down is gone by tomorrow. The bar for hate: it genuinely made you frown, and you can name the kind — not "I did not feel like it today". Write one short first-person line at a time (`add`), or remove one that no longer holds (`drop`). Not a log of what he played: that is music_taste.',
   parameters: {
     type: 'object',
     additionalProperties: false,
@@ -181,7 +182,7 @@ export const SOUL_DECL: ToolDecl = {
     },
   },
   tags: ['read', 'write'],
-  summary: { zh: '读/写她自己的口味档案（我爱听什么，第一人称）。', en: 'Reads and writes her own taste file.' },
+  summary: { zh: '读/写自己的听歌口味档案（我爱听什么，第一人称）。', en: 'Reads and writes your own taste file.' },
 };
 
 export const LYRIC_DECL: ToolDecl = {
@@ -218,5 +219,6 @@ export const MUSIC_DESCRIBE = {
     type: e.type,
     description: { zh: e.zh, en: e.en },
     trigger: e.trigger,
+    ...('tags' in e && e.tags ? { tags: [...e.tags] } : {}),
   })),
 };

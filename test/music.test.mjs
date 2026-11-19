@@ -607,7 +607,7 @@ test('工具与自描述一致；每个工具名带 music_ 前缀', () => {
   const def = MUSIC.describe;
   assert.deepEqual(def.tools.map((t) => t.name), ['music_now', 'music_history', 'music_taste', 'music_control', 'music_note', 'music_tag', 'music_pick', 'music_lyric', 'music_soul', 'music_listen']);
   for (const t of def.tools) assert.match(t.name, /^music_/);
-  assert.equal(def.events.length, 10, '8 个播放事件 + music.setup（环境不对）+ music.hearing（深听听不了）');
+  assert.equal(def.events.length, 11, '8 个播放事件 + music.setup（环境不对）+ music.hearing（深听听不了）+ music.handoff（交接快照）');
   for (const e of def.events) assert.match(e.type, /^music\./);
 });
 
@@ -1719,8 +1719,11 @@ test('取行：段事件给这一段唱过的，换歌给开头', () => {
   ];
   // 25→45 这一段唱了 D、E，给两行 → 就要这两行
   assert.deepEqual(segmentLines(lines, 25, 45, 2).map((l) => l.text), ['D', 'E']);
-  // 区间里只有一句（长间奏），往前补到够数
+  // 入队时的历史段只有一句（长间奏），保持原来的往前补到够数
   assert.deepEqual(segmentLines(lines, 35, 42, 2).map((l) => l.text), ['D', 'E']);
+  // M18：新相位的实时窗口禁止补旧段；一行就一行，零行就如实无词
+  assert.deepEqual(segmentLines(lines, 35, 42, 2, false).map((l) => l.text), ['E']);
+  assert.deepEqual(segmentLines(lines, 41, 49, 2, false), []);
   // 整段落在前奏：给开头几句，不能空着
   assert.deepEqual(segmentLines(lines, 0, 0, 2).map((l) => l.text), ['A']);
   // 换歌：还没开口，要的是"接下来这几句"，往前取只会拿到第一行

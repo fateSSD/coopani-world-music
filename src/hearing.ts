@@ -177,35 +177,63 @@ export function buildCloudRequest(o: {
  * 一次 fetch 回来的是碎块，一行的 JSON 可能被切成两半，所以必须自己攒行。
  * 解析失败的行（心跳、注释、半行）直接跳过——云端偶尔会插空行，那不是错误。
  */
-export function createSseReader(): (chunk: string) => string {
+export interface SseReader {
+  (chunk: string): string;
+  /** 流正常结束时冲刷最后一行；没有尾换行的完整 JSON 也不能丢。 */
+  flush(): string;
+  /** 可带最后一个碎块的结束入口，等价于 read(chunk) + flush()。 */
+  end(chunk?: string): string;
+}
+
+export function createSseReader(onUsage?: (usage: CloudUsage) => void): SseReader {
   let buf = '';
-  return (chunk: string): string => {
+  const takeLine = (raw: string): string => {
+    const line = raw.trim();
+    if (!line.startsWith('data:')) return '';
+    const data = line.slice(5).trim();
+    if (!data || data === '[DONE]') return '';
+    try {
+      const j = JSON.parse(data) as {
+        choices?: Array<{ delta?: { content?: unknown } }>;
+        usage?: unknown;
+      };
+      if (onUsage && j.usage) {
+        const u = parseCloudUsage(j.usage);
+        if (u) onUsage(u);
+      }
+      const c = j.choices?.[0]?.delta?.content;
+      if (typeof c === 'string') return c;
+      if (Array.isArray(c)) {
+        let out = '';
+        for (const part of c) {
+          const t = (part as { text?: unknown })?.text;
+          if (typeof t === 'string') out += t;
+        }
+        return out;
+      }
+    } catch { /* 完整一行也可能是不认识的数据，跳过即可 */ }
+    return '';
+  };
+  const read = ((chunk: string): string => {
     buf += chunk;
     let out = '';
     let idx = buf.indexOf('\n');
     while (idx >= 0) {
-      const line = buf.slice(0, idx).trim();
+      const line = buf.slice(0, idx);
       buf = buf.slice(idx + 1);
+      out += takeLine(line);
       idx = buf.indexOf('\n');
-      if (!line.startsWith('data:')) continue;
-      const data = line.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
-      try {
-        const j = JSON.parse(data) as {
-          choices?: Array<{ delta?: { content?: unknown } }>;
-        };
-        const c = j.choices?.[0]?.delta?.content;
-        if (typeof c === 'string') out += c;
-        else if (Array.isArray(c)) {
-          for (const part of c) {
-            const t = (part as { text?: unknown })?.text;
-            if (typeof t === 'string') out += t;
-          }
-        }
-      } catch { /* 半行 JSON，下一块会补齐 */ }
     }
     return out;
+  }) as SseReader;
+  read.flush = (): string => {
+    if (!buf) return '';
+    const tail = buf;
+    buf = '';
+    return takeLine(tail);
   };
+  read.end = (chunk = ''): string => read(chunk) + read.flush();
+  return read;
 }
 
 /** 从一段自由文本里抠出第一个完整的 JSON 对象。模型爱套 ```json 或加前言。 */
@@ -320,9 +348,41 @@ export interface CloudConfig {
   key: string;
 }
 
+export interface CloudUsage {
+  promptTokens: number;
+  completionTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  reasoningTokens?: number;
+}
+
+function parseCloudUsage(raw: unknown): CloudUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const promptTokens = Math.max(0, Number(o.prompt_tokens ?? o.input_tokens) || 0);
+  const completionTokens = Math.max(0, Number(o.completion_tokens ?? o.output_tokens) || 0);
+  if (!promptTokens && !completionTokens) return undefined;
+  const details = (o.prompt_tokens_details && typeof o.prompt_tokens_details === 'object')
+    ? o.prompt_tokens_details as Record<string, unknown>
+    : {};
+  const cacheHitTokens = Math.max(0, Number(o.prompt_cache_hit_tokens ?? details.cached_tokens) || 0);
+  const cacheMissTokens = Math.max(0, Number(o.prompt_cache_miss_tokens) || Math.max(0, promptTokens - cacheHitTokens));
+  const compDetails = (o.completion_tokens_details && typeof o.completion_tokens_details === 'object')
+    ? o.completion_tokens_details as Record<string, unknown>
+    : {};
+  const reasoningTokens = Number(compDetails.reasoning_tokens);
+  return {
+    promptTokens,
+    completionTokens,
+    cacheHitTokens,
+    cacheMissTokens,
+    ...(Number.isFinite(reasoningTokens) && reasoningTokens > 0 ? { reasoningTokens } : {}),
+  };
+}
+
 export type CloudResult =
-  | { ok: true; slice: HearingSlice }
-  | { ok: false; reason: string };
+  | { ok: true; slice: HearingSlice; usage?: CloudUsage }
+  | { ok: false; reason: string; usage?: CloudUsage };
 
 const HTTP_HINT: Record<number, string> = {
   400: '请求被拒（多半是模型不支持音频输入，换一个模型名再试）',
@@ -343,9 +403,11 @@ export async function cloudListen(
   wavPath: string,
   cfg: CloudConfig,
   ctx: { at: number; posSec: number | null; seconds: number },
+  signal?: AbortSignal,
 ): Promise<CloudResult> {
   if (!cfg.key.trim()) return { ok: false, reason: '云端深听还没填密钥（设置 → 一起听歌 → 深听方式）' };
   if (!/^https?:\/\//i.test(cfg.base.trim())) return { ok: false, reason: `云端地址不像个网址：${cfg.base}` };
+  if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
 
   let b64: string;
   try {
@@ -358,7 +420,10 @@ export async function cloudListen(
 
   const { url, body } = buildCloudRequest({ base: cfg.base, model: cfg.model, wavBase64: b64, seconds: ctx.seconds });
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 45_000);
+  let timedOut = false;
+  const onAbort = (): void => { ctrl.abort(); };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, 45_000);
   const started = Date.now();
   try {
     const res = await fetch(url, {
@@ -373,31 +438,46 @@ export async function cloudListen(
       try { detail = cleanStr(await res.text(), 160); } catch { /* 没有正文 */ }
       return { ok: false, reason: `${hint}${detail ? `：${detail}` : ''}` };
     }
-    const read = createSseReader();
-    let text = '';
-    if (res.body) {
-      const decoder = new TextDecoder();
-      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-        text += read(decoder.decode(chunk, { stream: true }));
+    let usage: CloudUsage | undefined;
+    const read = createSseReader((u) => { usage = u; });
+    try {
+      let text = '';
+      if (res.body) {
+        const decoder = new TextDecoder();
+        for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+          text += read(decoder.decode(chunk, { stream: true }));
+        }
+        text += read(decoder.decode());
+        text += read.flush();
+      } else {
+        // 少数网关会忽略 stream，直接回一个普通 JSON。
+        const j = JSON.parse(await res.text()) as { choices?: Array<{ message?: { content?: unknown } }>; usage?: unknown };
+        if (j.usage) usage = parseCloudUsage(j.usage);
+        const c = j.choices?.[0]?.message?.content;
+        text = typeof c === 'string' ? c : '';
       }
-      text += read(decoder.decode());
-    } else {
-      // 少数网关会忽略 stream，直接回一个普通 JSON。
-      const j = JSON.parse(await res.text()) as { choices?: Array<{ message?: { content?: unknown } }> };
-      const c = j.choices?.[0]?.message?.content;
-      text = typeof c === 'string' ? c : '';
+      if (!text.trim()) return { ok: false, reason: '云端回了空内容', ...(usage ? { usage } : {}) };
+      return {
+        ok: true,
+        slice: normalizeAnswer(text, { ...ctx, latencySec: Math.round((Date.now() - started) / 100) / 10 }),
+        ...(usage ? { usage } : {}),
+      };
+    } catch (streamErr) {
+      // abort 前最后一块可能没有换行：先冲刷尾部，已经发生的 usage 不能随取消丢掉。
+      read.flush();
+      const msg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+      if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消', ...(usage ? { usage } : {}) };
+      if (timedOut || /abort/i.test(msg)) return { ok: false, reason: '云端 45 秒没回完，已放弃这次', ...(usage ? { usage } : {}) };
+      return { ok: false, reason: `读取云端响应中断（${msg.slice(0, 120)}）`, ...(usage ? { usage } : {}) };
     }
-    if (!text.trim()) return { ok: false, reason: '云端回了空内容' };
-    return {
-      ok: true,
-      slice: normalizeAnswer(text, { ...ctx, latencySec: Math.round((Date.now() - started) / 100) / 10 }),
-    };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    if (/abort/i.test(msg)) return { ok: false, reason: '云端 45 秒没回完，已放弃这次' };
+    if (signal?.aborted) return { ok: false, reason: '已打断，本次深听取消' };
+    if (timedOut || /abort/i.test(msg)) return { ok: false, reason: '云端 45 秒没回完，已放弃这次' };
     return { ok: false, reason: `连不上云端（${msg.slice(0, 120)}）` };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
