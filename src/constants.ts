@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { defaultHearingHome, hearingPythonPath } from './platform.ts';
 import type { Feel, Phase } from './vibe.ts';
 
 /**
@@ -11,7 +12,7 @@ import type { Feel, Phase } from './vibe.ts';
  * （life / journey / pz / 炉石都是这么做的 —— 同一个隐患，运行时读 package.json
  * 在打包后的路径里不可靠，暂时没有更好的办法。）
  */
-export const PANEL_VERSION = '0.7.0';
+export const PANEL_VERSION = '1.0.1';
 
 /**
  * 随包带的形象包（`assets/figure-groove`）。
@@ -22,7 +23,7 @@ export const PANEL_VERSION = '0.7.0';
 export const FIGURE_PACK_SOURCE = fileURLToPath(new URL('../assets/figure-groove', import.meta.url));
 
 /** 构建标记。每次改行为都改一下——"改了没效果"和"改了改错了"靠它两秒分开。 */
-export const BUILD_TAG = 'b2026-11-15.figure.92';
+export const BUILD_TAG = 'b2026-11-20.figure.92';
 
 /**
  * 等歌词的上限。超时就不给词，抓取在后台继续。
@@ -53,7 +54,7 @@ export const HEARING_ANALYZER_FILE = fileURLToPath(new URL('../assets/hearing/an
  * 一条安装脚本就能落到这个位置；老机器上已经在别处装好的，仍然认那两处旧路径。
  */
 export const HEARING_HOME = (process.env.COOPANI_HEARING_HOME ?? '').trim()
-  || join(process.env.LOCALAPPDATA || homedir(), 'CoopaniMusic', 'hearing');
+  || defaultHearingHome(process.platform, homedir(), process.env);
 /** 这个仓库最早在自己机器上装的那两处（2026-10-31）。只做兼容，不再写进文档。 */
 export const LEGACY_HEARING_PYTHON = 'E:/Coopanion/data/hearing-venv/Scripts/python.exe';
 export const LEGACY_HEARING_MODELS = 'E:/Coopanion/data/hearing/models';
@@ -62,7 +63,7 @@ const pickExisting = (preferred: string, legacy: string): string => {
   return existsSync(legacy) ? legacy : preferred;
 };
 export const HEARING_PYTHON = (process.env.COOPANI_HEARING_PYTHON ?? '').trim()
-  || pickExisting(join(HEARING_HOME, 'venv', 'Scripts', 'python.exe'), LEGACY_HEARING_PYTHON);
+  || pickExisting(hearingPythonPath(HEARING_HOME, process.platform), LEGACY_HEARING_PYTHON);
 export const HEARING_MODELS_DIR = (process.env.COOPANI_HEARING_MODELS ?? '').trim()
   || pickExisting(join(HEARING_HOME, 'models'), LEGACY_HEARING_MODELS);
 export const HEARING_CACHE_DIR = join(HEARING_MODELS_DIR, 'demucs');

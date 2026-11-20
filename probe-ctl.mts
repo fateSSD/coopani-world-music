@@ -1,0 +1,11 @@
+import { runControl, statusText } from './src/control.ts';
+import { NowPlayingBridge } from './src/nowplaying.ts';
+const b = new NowPlayingBridge();
+b.start();
+await new Promise((r) => setTimeout(r, 3000));
+console.log('起始:', JSON.stringify(b.snapshot()?.sessions?.[0]));
+const r = await runControl('resume', 'QQMusic');
+console.log('resume →', JSON.stringify(r), statusText(r.status));
+await new Promise((r) => setTimeout(r, 2500));
+console.log('播放后:', JSON.stringify(b.snapshot()?.sessions?.[0]));
+b.stop();

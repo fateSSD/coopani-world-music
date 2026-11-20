@@ -1,5 +1,31 @@
 # 更新日志
 
+## 1.0.1 — 2026-11-20（平台层抽离，为 mac 铺路；两处显示修正）
+
+对外行为与 1.0.0 一致，Windows 上跑起来看不出差别。发这一版是为了把平台耦合先收口，
+后面接 mac 的媒体通道时不用再动业务代码。
+
+- **新增 `src/platform.ts`（平台层）**：数据根目录、深听路径与解释器、列进程的命令、
+  进程名归一与匹配、杀进程树、本版通道清单（`channels()`）、不可用提示。
+  每个函数第一个参数是 `platform`，默认 `process.platform` —— 测试传 `'darwin'`
+  就能在 Windows 上验 mac 分支。
+- **六处接线改走平台层**：`constants.ts`（`HEARING_HOME` / `HEARING_PYTHON`）、
+  `peer.ts`（`tasklist` → `peerProbeCommand` + `matchesPeerNames`）、
+  `world-hearing.ts`（收尸命令）、`world.ts`（音频跟拍判断）、`world-tools.ts` /
+  `world-webui.ts`（「找不到 powershell」这类提示按平台说话）。
+- **Windows 行为按原值钉死**：`tasklist /FO CSV` 仍按「带引号整名」匹配（`QQ.exe` 不会
+  命中 `QQMusic.exe`），`LOCALAPPDATA` 缺失仍回落 `homedir()`，深听路径与旧版逐字一致。
+  新增 `test/platform.test.mjs`（11 条）与 `test/control.test.mjs`（2 条）。
+- **修：状态文案漏了两档。** SMTC 的枚举是 Closed / Opened / Changing / Stopped /
+  Playing / Paused，原来只译了四档。真机上按「继续」时回执是 `Opened`，于是工具回执里
+  会出现「现在《Reach Out To The Truth》，Opened。」——模型会把这句英文原样说出口。
+- **修：面板版本号一直显示 0.7.0。** 1.0.0 发版时漏改 `PANEL_VERSION`（该常量上方注释
+  自己写着「发版时跟 package.json 一起改」），`music_status` 与诊断回执里带的都是错版本，
+  拿着错版本报障最难查。现与 `package.json` 对齐为 1.0.1，`BUILD_TAG` 同步更新。
+- **实测记录（2026-11-20，QQ音乐 22.76 / Windows）**：读侧识别到曲目与进度；控制侧
+  `pause` / `resume` / `next` 均生效；`prev` 在 QQ音乐上表现为「回到本曲开头」而不是切上一首
+  （播放器自身行为，系统媒体面板上按同一个键也一样，非本扩展缺陷）。
+
 ## 1.0.0 — 2026-11-19（Harness 对齐与深听报错修复）
 
 - **P0 修复 `speechNorm is not defined`**：导出 `helpers.ts` 的 `speechNorm` 并在 `world-hearing.ts` 显式导入，彻底根治自动深听命中 `checkSpeechMatch` 时的 `ReferenceError`；补充回归单测。

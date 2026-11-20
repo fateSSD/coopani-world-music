@@ -11,6 +11,7 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { matchesPeerNames, peerProbeCommand } from './platform.ts';
 
 const run = promisify(execFile);
 
@@ -32,14 +33,17 @@ export async function isPeerRunning(names: readonly string[]): Promise<boolean> 
 
   let hit = false;
   try {
-    // /FO CSV 一行一个进程，形如 "Hearthstone.exe","1234","Console","1","1,234 K"
-    const { stdout } = await run('tasklist', ['/NH', '/FO', 'CSV'], {
+    // win32：/FO CSV 一行一个进程，形如 "Hearthstone.exe","1234","Console","1","1,234 K"
+    // darwin：/bin/ps -Ao comm= 一行一个可执行文件全路径，末段是进程名
+    // 两种口径的匹配规则（带引号整名 / 末段比 + 容忍 Helper 派生进程）都在 platform.ts，
+    // 这里只管跑命令。
+    const probe = peerProbeCommand(process.platform);
+    const { stdout } = await run(probe.command, probe.args, {
       timeout: 4000,
       windowsHide: true,
       maxBuffer: 4 << 20,
     });
-    const lower = stdout.toLowerCase();
-    hit = names.some((name) => lower.includes(`"${name.toLowerCase()}"`));
+    hit = matchesPeerNames(stdout, names, process.platform);
   } catch {
     hit = false;
   }

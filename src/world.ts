@@ -19,6 +19,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
 import { ensureFigurePack, inspectFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 import { isPeerRunning } from './peer.ts';
+import { channels } from './platform.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
@@ -432,7 +433,10 @@ export class MusicWorld implements World {
    */
   private startAudio(): void {
     if (!this.cfg.audioReactive) { this.log?.info('音频跟拍是关着的。'); return; }
-    if (process.platform !== 'win32') { this.log?.info('音频跟拍目前只有 Windows 有通路。'); return; }
+    if (!channels(process.platform).systemAudio) {
+      this.log?.info(`音频跟拍还没接通这个系统（${process.platform}）：mac 要走 Core Audio tap，排在读侧之后。`);
+      return;
+    }
     if (this.audioChild || this.audioHostPid || this.audioPid) return;
     if (!existsSync(AUDIO_PROBE_FILE)) {
       this.log?.warn(`找不到采集脚本：${AUDIO_PROBE_FILE}`);

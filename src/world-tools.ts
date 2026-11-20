@@ -19,6 +19,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
 import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 import { isPeerRunning } from './peer.ts';
+import { unavailableHint } from './platform.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
@@ -235,7 +236,10 @@ export const toolMethods: Record<string, any> = {
     const bridge = this.bridge;
     if (!bridge) return '数据源：还没启动。';
     const h = bridge.health();
-    if (!h.exe) return '数据源：这台机器找不到 powershell，读不到播放器。';
+    if (!h.exe) {
+      const why = unavailableHint(process.platform);
+      return why ? `数据源：${why}` : '数据源：这台机器找不到 powershell，读不到播放器。';
+    }
     if (!h.running) return `数据源：读取进程没有在跑${h.lastError ? `（${h.lastError}）` : ''}。`;
     if (h.lastLineAt === null) return '数据源：读取进程刚起来，还没拿到第一份数据。';
     const lag = Math.round((Date.now() - h.lastLineAt) / 1000);

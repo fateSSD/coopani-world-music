@@ -1,0 +1,14 @@
+import { runControl } from './src/control.ts';
+import { NowPlayingBridge } from './src/nowplaying.ts';
+const b = new NowPlayingBridge();
+b.start();
+await new Promise((r) => setTimeout(r, 3000));
+const cur = () => { const s = b.snapshot()?.sessions?.[0]; return s ? `${s.status} | ${s.title?.slice(0,24)} | ${s.posSec}` : 'null'; };
+console.log('当前:', cur());
+console.log('等 6 秒再按上一首…');
+await new Promise((r) => setTimeout(r, 6000));
+console.log('按前:', cur());
+const r = await runControl('prev', 'QQMusic');
+await new Promise((x) => setTimeout(x, 2500));
+console.log('prev →', r.ok, r.status, '| 之后:', cur());
+b.stop();

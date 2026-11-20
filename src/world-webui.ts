@@ -19,6 +19,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
 import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 import { isPeerRunning } from './peer.ts';
+import { unavailableHint } from './platform.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
@@ -153,7 +154,11 @@ export const webuiMethods: Record<string, any> = {
     } else {
       const h = bridge.health();
       const lag = h.lastLineAt === null ? null : Math.round((Date.now() - h.lastLineAt) / 1000);
-      if (!h.exe) lamps.push({ label: '播放器', state: 'error', hint: '找不到系统自带的命令行宿主，读不到播放器。' });
+      if (!h.exe) {
+        // 没接通时给的是这个平台的话：mac 上写「找不到 powershell」等于胡话
+        const why = unavailableHint(process.platform);
+        lamps.push({ label: '播放器', state: 'error', hint: why || '找不到系统自带的命令行宿主，读不到播放器。' });
+      }
       else if (!h.running) lamps.push({ label: '播放器', state: 'error', hint: h.lastError ?? '读取进程没有在跑。' });
       else if (lag === null) lamps.push({ label: '播放器', state: 'loading', hint: '正在连上系统媒体会话。' });
       else if (lag > 20) lamps.push({ label: '播放器', state: 'error', hint: `数据停在 ${lag} 秒前。` });

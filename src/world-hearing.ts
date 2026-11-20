@@ -19,6 +19,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
 import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 import { isPeerRunning } from './peer.ts';
+import { killTreeSpec } from './platform.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
@@ -386,14 +387,17 @@ export const hearingMethods: Record<string, any> = {
    *
    * 这台机器上 venv 的 python.exe 是个壳（36352），真正的解释器是它拉起来的子进程（36188）。
    * 只 kill 壳的话解释器会变成孤儿继续跑——实测两个进程并存，一个 4MB、一个 718MB。
-   * 所以 Windows 上统一走 taskkill /T。
+   * 所以 Windows 上统一走 taskkill /T（命令由 platform.ts 给）。
+   * mac 上暂时退回 `child.kill()`：要杀整个进程组得在 spawn 时 detached，那是深听
+   * 那一档的改动，P0 不动，先保证 Windows 收尸逻辑一字不变。
    */
   killHearingTree(child: ChildProcess): void {
     const pid = child.pid;
     if (!pid) return;
-    if (process.platform === 'win32') {
+    const spec = killTreeSpec(pid, process.platform);
+    if (spec) {
       try {
-        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+        spawnSync(spec.command, spec.args, { windowsHide: true });
         return;
       } catch { /* 退化成普通 kill */ }
     }

@@ -21,13 +21,21 @@ export interface ControlResult {
   error?: string;
 }
 
-/** 播放器状态 → 人话。 */
+/**
+ * 播放器状态 → 人话。
+ *
+ * `Opened` / `Changing` 是 SMTC 的真实枚举值（`GlobalSystemMediaTransportControlsSessionPlaybackStatus`），
+ * 不是异常：从 Closed/Stopped 按「继续」时，回执先落在 `Opened`，一两秒后才变 `Playing`。
+ * 2026-11-20 实测 QQ音乐 resume 就回 `Opened`——漏了这两档，工具回执里会直接甩英文给模型。
+ */
 export function statusText(status: string | undefined): string {
   switch (status) {
     case 'Playing': return '在放';
     case 'Paused': return '已暂停';
     case 'Stopped': return '已停止';
     case 'Closed': return '已关闭';
+    case 'Opened': return '刚起播';
+    case 'Changing': return '切换中';
     default: return status ? String(status) : '状态未知';
   }
 }
