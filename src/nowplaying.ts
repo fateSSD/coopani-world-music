@@ -84,10 +84,12 @@ export interface SessionSnapshot {
   app: string;
   /**
    * 这条会话从哪来。
-   * - `smtc`：系统媒体会话，有真实进度与播放状态。
-   * - `title`：脚本用主窗口标题合成的兜底（播放器不上报 SMTC 时），没有进度，暂停靠猜。
+   * - `smtc`：Windows 系统媒体会话，有真实进度与播放状态。
+   * - `mediaremote`：mac 的 MediaRemote（经 Apple 签名的 osascript 读出来），字段同源，
+   *   进度用 `calculatedPlaybackPosition` 或「报告时刻 + 速率」推算。
+   * - `title`：脚本用主窗口标题合成的兜底（播放器不上报时），没有进度，暂停靠猜。
    */
-  via: 'smtc' | 'title';
+  via: 'smtc' | 'mediaremote' | 'title';
   status: PlaybackStatus;
   title: string;
   artist: string;

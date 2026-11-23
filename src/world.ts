@@ -21,7 +21,8 @@ import { ensureFigurePack, inspectFigurePack, type FigurePackResult } from './fi
 import { isPeerRunning } from './peer.ts';
 import { channels } from './platform.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
-import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
+import { findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
+import { createMediaBridge, type MediaBridge } from './media.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
 import { ListenStore, summarize, type ListenRecord, type WantItem } from './history.ts';
 import { LyricStore, linesAt, linesFrom, quoteLines, segmentLines, type LyricInput } from './lyrics.ts';
@@ -95,7 +96,7 @@ export class MusicWorld implements World {
   readonly id = MUSIC_ID;
   private host: WorldHost | null = null;
   private log: Logger | null = null;
-  private bridge: NowPlayingBridge | null = null;
+  private bridge: MediaBridge | null = null;
   /** 托管采集进程的宿主（conhost --headless，找不到 conhost 时就是直启的 powershell）。 */
   private audioChild: ChildProcess | null = null;
   /** 宿主的 pid（conhost，或找不到 conhost 时直启的 powershell）。 */
@@ -399,7 +400,9 @@ export class MusicWorld implements World {
       }
     }
 
-    this.bridge = new NowPlayingBridge({
+    // 按平台挑桥：Windows 走 SMTC（PowerShell 常驻 + 文件桥），mac 走 MediaRemote
+    // （借 osascript 读）。两边的形状一致，所以这里的调用点与改造前完全一样。
+    this.bridge = createMediaBridge({
       intervalMs: cfg.intervalMs,
       onTick: (payload) => this.onTick(payload),
       log: (level, message) => {

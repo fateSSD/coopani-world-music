@@ -189,6 +189,10 @@ export interface Channels {
  *
  * mac 的 `mediaReady: false` 会在接上 MediaRemote 之后改 true；在那之前所有上层判断
  * 都靠这一处，不要散在别处写平台判断。
+ *
+ * 2026-11-23 状态：mac 的读侧**代码已写**（`src/darwin-media.ts`，osascript 借 Apple
+ * 签名读 MediaRemote），但**没有真机跑过**，所以这三项仍是 false —— 按第二条规矩，
+ * 闸要跟「通道真的接通」同步，不是跟「代码写完」同步。真机验过再一起放开。
  */
 export function channels(platform: Platform = process.platform): Channels {
   if (platform === 'win32') {
@@ -198,6 +202,18 @@ export function channels(platform: Platform = process.platform): Channels {
     return { media: 'mediaremote', mediaReady: false, control: false, systemAudio: false, localHearing: false };
   }
   return { media: 'mediaremote', mediaReady: false, control: false, systemAudio: false, localHearing: false };
+}
+
+/**
+ * 读「正在播放」该 new 哪个桥。
+ *
+ * 业务层只调 `createMediaBridge()`，由工厂问这一句 —— 这样「平台判断只在本文件」
+ * 这条规矩才守得住。认不出的平台给 mediaremote：那边是外挂进程，坏了自己报错，
+ * 不会像 SMTC 那样要求一个不存在的 PowerShell。
+ */
+export function mediaBridgeKind(platform: Platform = process.platform): 'smtc' | 'mediaremote' {
+  if (platform === 'win32') return 'smtc';
+  return 'mediaremote';
 }
 
 /**
