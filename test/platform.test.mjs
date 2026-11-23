@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 
 import {
   channels, defaultHearingHome, hearingPythonPath, killTreeSpec, localDataRoot, matchesPeerNames,
-  peerProbeCommand, processName, unavailableHint,
+  mediaSourceNoun, peerProbeCommand, processName, readerNoun, unavailableHint,
 } from '../src/platform.ts';
 
 test('数据根目录：Windows 还是 LOCALAPPDATA，缺了回落 homedir（不是 AppData\\Local）', () => {
@@ -97,4 +97,15 @@ test('没接通时说人话，不静默', () => {
   const hint = unavailableHint('darwin');
   assert.ok(hint.includes('macOS'));
   assert.ok(hint.length > 0);
+  // mac 上不许提 powershell —— 那边根本没有它
+  assert.ok(!hint.toLowerCase().includes('powershell'));
+});
+
+test('读侧名词：Windows 保持原文，mac 不许出现「读取进程」', () => {
+  // 这两条钉的是 Windows 回执里的原词，改这里等于改用户已经看惯的说法
+  assert.equal(readerNoun('win32'), '读取进程');
+  assert.equal(mediaSourceNoun('win32'), '系统媒体会话');
+  // mac 每次读取只是一个短期进程，说「读取进程没有在跑」会让人去任务管理器里找不存在的东西
+  assert.equal(readerNoun('darwin'), '播放器读取');
+  assert.equal(mediaSourceNoun('darwin'), '系统的正在播放');
 });

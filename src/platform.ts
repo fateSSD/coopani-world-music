@@ -229,3 +229,21 @@ export function unavailableHint(platform: Platform = process.platform): string {
   }
   return '这个系统还没有接通播放器读取。';
 }
+
+/**
+ * 「读侧」在两种平台上分别叫什么。
+ *
+ * 文案里不许对 mac 说「读取进程没有在跑」—— 那边根本没有常驻进程，每次读取只是一个
+ * 短期进程，说成「进程没在跑」会让人去任务管理器里找一个不存在的东西。
+ * Windows 的词保持原文，一个字都不改。
+ */
+export function readerNoun(platform: Platform = process.platform): string {
+  if (platform === 'win32') return '读取进程';
+  return '播放器读取';
+}
+
+/** 数据源的名字。同理：mac 上不该说「系统媒体会话」（那是 SMTC 的叫法）。 */
+export function mediaSourceNoun(platform: Platform = process.platform): string {
+  if (platform === 'win32') return '系统媒体会话';
+  return '系统的正在播放';
+}

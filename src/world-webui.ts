@@ -19,7 +19,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
 import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 import { isPeerRunning } from './peer.ts';
-import { unavailableHint } from './platform.ts';
+import { mediaSourceNoun, readerNoun, unavailableHint } from './platform.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
@@ -159,8 +159,8 @@ export const webuiMethods: Record<string, any> = {
         const why = unavailableHint(process.platform);
         lamps.push({ label: '播放器', state: 'error', hint: why || '找不到系统自带的命令行宿主，读不到播放器。' });
       }
-      else if (!h.running) lamps.push({ label: '播放器', state: 'error', hint: h.lastError ?? '读取进程没有在跑。' });
-      else if (lag === null) lamps.push({ label: '播放器', state: 'loading', hint: '正在连上系统媒体会话。' });
+      else if (!h.running) lamps.push({ label: '播放器', state: 'error', hint: h.lastError ?? `${readerNoun()}没有在跑。` });
+      else if (lag === null) lamps.push({ label: '播放器', state: 'loading', hint: `正在连上${mediaSourceNoun()}。` });
       else if (lag > 20) lamps.push({ label: '播放器', state: 'error', hint: `数据停在 ${lag} 秒前。` });
       else if (st?.playing && st.track) {
         lamps.push({ label: '播放器', state: 'online', hint: `${playerLabel(st.track.app, this.cfg.extraPlayers)} 在放《${st.track.title}》` });

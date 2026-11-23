@@ -19,7 +19,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
 import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 import { isPeerRunning } from './peer.ts';
-import { unavailableHint } from './platform.ts';
+import { readerNoun, unavailableHint } from './platform.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
@@ -240,8 +240,8 @@ export const toolMethods: Record<string, any> = {
       const why = unavailableHint(process.platform);
       return why ? `数据源：${why}` : '数据源：这台机器找不到 powershell，读不到播放器。';
     }
-    if (!h.running) return `数据源：读取进程没有在跑${h.lastError ? `（${h.lastError}）` : ''}。`;
-    if (h.lastLineAt === null) return '数据源：读取进程刚起来，还没拿到第一份数据。';
+    if (!h.running) return `数据源：${readerNoun()}没有在跑${h.lastError ? `（${h.lastError}）` : ''}。`;
+    if (h.lastLineAt === null) return `数据源：${readerNoun()}刚起来，还没拿到第一份数据。`;
     const lag = Math.round((Date.now() - h.lastLineAt) / 1000);
     if (lag > 20) return `数据源：数据停在 ${lag} 秒前，可能播放器刚被关掉或系统媒体组件重启了。`;
     return `数据源正常（${lag} 秒前的采样${h.restarts ? `，重启过 ${h.restarts} 次` : ''}）。`;
