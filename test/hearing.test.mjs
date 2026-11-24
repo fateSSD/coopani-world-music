@@ -485,12 +485,16 @@ test('第三轮复审（M10/M11/M12/M13/M14/M15）：SSE取消保留usage、segm
       assert.ok(descDisk.events.find((e) => e.type === evType)?.tags?.includes('snapshot'), `M14: describe.json ${evType} 应含 snapshot`);
     }
 
-    // M15：package.json 三处简介开头置顶 Coopani 宿主版本要求
+    // M15：package.json 三处简介开头置顶 Coopani 宿主版本要求 + QQ 群
     // 2026-11-24 起要同时写明两个平台 —— 只说 Windows 的话，mac 用户在市场上会以为装不了
+    // 版本门槛跟内核走：0.2.22 是 cortico v0.2.17 最后一次变动那版。
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
-    assert.match(pkg.description, /^一起听歌（Windows 10\/11 与 macOS，需 Coopani 0\.2\.16\+）/);
-    assert.match(pkg.cortico.locales.zh.description, /^支持 Windows 10\/11 与 macOS[^\n]*需要 Coopani 0\.2\.16\+/);
-    assert.match(pkg.cortico.locales.en.description, /^Windows 10\/11 and macOS[^\n]*needs Coopani 0\.2\.16\+/);
+    assert.match(pkg.description, /^一起听歌（Windows 10\/11 与 macOS，需 Coopani 0\.2\.22\+｜QQ 群 284525159）/);
+    assert.match(pkg.cortico.locales.zh.description, /^支持 Windows 10\/11 与 macOS[^\n]*需要 Coopani 0\.2\.22\+/);
+    assert.match(pkg.cortico.locales.en.description, /^Windows 10\/11 and macOS[^\n]*needs Coopani 0\.2\.22\+/);
+    for (const d of [pkg.description, pkg.cortico.locales.zh.description, pkg.cortico.locales.en.description]) {
+      assert.match(d, /284525159/, '三处简介都要带 QQ 群号');
+    }
 
     // M10：SSE 流已吐出 usage 后若内容为空或流读取中止，cloudListen 均保留 usage 且 hearingOnce 上报
     const wavFile = join(dir, 'sse.wav');

@@ -9,6 +9,9 @@
  * 那是她自己在听的时候下的判断，不该由这个页面上的按钮替她下。
  */
 
+/** 作者的 QQ 群。反馈栏和简介写的是同一个号，改这里一处就够。 */
+const QQ_GROUP = '284525159';
+
 const TEXT = {
   zh: {
     eyebrow: '她此刻',
@@ -76,6 +79,7 @@ const TEXT = {
     fbOpenWant: '开 Issues 提需求 ↗',
     fbCopied: '已复制，粘过去就行',
     fbAddr: '仓库：',
+    fbGroupLead: 'QQ 群：',
     fbWhy: '按钮只负责把版本和当前状态复制到剪贴板（不带任何身份信息）。'
       + '点右边的链接去 GitHub 开一条，把复制的内容粘在正文里。',
     fail: '读不到',
@@ -146,6 +150,7 @@ const TEXT = {
     fbOpenWant: 'Request a feature ↗',
     fbCopied: 'copied — just paste it',
     fbAddr: 'Repo: ',
+    fbGroupLead: 'QQ group: ',
     fbWhy: 'The button only copies the version and current state to your clipboard. '
       + 'Use the link to open a GitHub issue and paste it in the body.',
     fail: 'cannot read',
@@ -350,6 +355,9 @@ function mount(ctx) {
     const addr = el(doc, 'div', 'mu-fb-addr');
     addr.append(el(doc, 'span', null, t.fbAddr), el(doc, 'code', null, fb.repo));
     fbBox.append(addr);
+    const grp = el(doc, 'div', 'mu-fb-addr');
+    grp.append(el(doc, 'span', null, t.fbGroupLead), el(doc, 'code', null, QQ_GROUP));
+    fbBox.append(grp);
     fbBox.append(el(doc, 'p', 'mu-fb-why', t.fbWhy));
   };
 
