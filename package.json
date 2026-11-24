@@ -1,6 +1,6 @@
 {
   "name": "coopani-world-music",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "一起听歌（Windows 10/11，需 Coopani 0.2.16+）· 桌宠陪你一起听歌的小伴侣：实时知道 QQ 音乐和网易云在放哪首歌，跟着真实鼓点摇摆、聊刚唱过的歌词、记住你的听歌口味，还能听出调性和乐器。",
   "author": {
