@@ -19,7 +19,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
 import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 import { isPeerRunning } from './peer.ts';
-import { killTreeSpec } from './platform.ts';
+import { channels, killTreeSpec } from './platform.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
@@ -481,6 +481,13 @@ export const hearingMethods: Record<string, any> = {
     const mode = this.hearingMode();
     if (mode === 'off') return { ok: false, reason: '深听关着（设置 → 一起听歌 → 深听方式）' };
     if (mode === 'local' && !this.localHearingReady()) {
+      // mac 上还没有本地安装脚本，别让人去找一个不存在的 README 步骤
+      if (!channels(process.platform).localHearing) {
+        return {
+          ok: false,
+          reason: '这台系统还没有本地深听（macOS 版还在做）。把「深听方式」切成云端，填个密钥就能用',
+        };
+      }
       return {
         ok: false,
         reason: '本地深听还没装好（找不到本机分析器）。要么按 README 装一遍，约 500MB；'

@@ -13,6 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { channels } from './platform.ts';
 
 export type HearingMode = 'cloud' | 'local' | 'off';
 
@@ -869,6 +870,18 @@ export function hearingUsable(s: HearingStatus): boolean {
  * 事件是唯一每轮必达的通道，所以这一句必须自己把话说全：能力在、怎么用、以及它
  * **优先于**旧提示词里那句「不许描述具体声音」。
  */
+/**
+ * 本地深听装不上时该怎么劝。
+ *
+ * mac 上连安装脚本都还没有（`scripts/install-hearing.ps1` 是 PowerShell 的），
+ * 让人「按 README 装一遍」等于让他去找一个不存在的步骤。
+ */
+function localInstallHint(): string {
+  return channels(process.platform).localHearing
+    ? '要么按 README 装一遍，要么切成「云端」——填个密钥立刻能用。'
+    : '这台系统还没有本地深听（macOS 版还在做），切成「云端」——填个密钥立刻能用。';
+}
+
 export function hearingNotice(s: HearingStatus, build: string): string | null {
   if (s.mode === 'off') return null;
   if (!hearingUsable(s)) {
@@ -878,7 +891,7 @@ export function hearingNotice(s: HearingStatus, build: string): string | null {
         + '要么切成「本地」——本地要下载约 500MB，但之后完全在本机跑、不联网。\n'
         + '**别说成「坏了」** —— 听歌、跟拍、换歌那句都正常，只是她还没学会听调子。'
       : '深听选的是**本地**，但这台机器还没装好（要下约 500MB 的依赖和模型），所以现在说不了调性、和弦、旋律和乐器。\n'
-        + '跟他说一句：设置 → 一起听歌 → 深听方式。要么按 README 装一遍，要么切成「云端」——填个密钥立刻能用。\n'
+        + `跟他说一句：设置 → 一起听歌 → 深听方式。${localInstallHint()}\n`
         + '**别说成「坏了」** —— 听歌、跟拍、换歌那句都正常。';
   }
 

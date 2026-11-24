@@ -2,9 +2,12 @@
  * mac 读侧的验证。
  *
  * 全部在 Windows 上跑得通：解析、进度推算、命令生成都是纯函数，桥类走注入的假执行器。
- * **这里通过不代表 mac 上能用** —— 真机还有三件事没验（见 `_状态.md`）：
- * MRNowPlayingRequest 在 26.6.2 上是否真给数据、控制命令是否被吞、进程名对不对。
- * 这个文件的职责是「不许把能推出来的东西推错」，不是「证明能用」。
+ *
+ * **2026-11-24 真机已验通两件**（macOS 26.6.2 / 25G83 / M4）：`MRNowPlayingRequest` 读到了
+ * 歌名、`sendCommandOptionsCompletion` 让播放器真的停了。所以这里不再是「推演」，而是
+ * 「把真机验通的行为钉住，改坏时会立刻炸」。
+ * 还剩两件没验：字段齐不齐（只验了 title）、播放器的显示名到底长什么样（所以下面
+ * 三种写法都留了）。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,11 +15,13 @@ import assert from 'node:assert/strict';
 import {
   DarwinMediaBridge, clampPosition, controlCommand, controlJxa, estimatePosition,
   OSASCRIPT_PATH, parseDarwinTick, pickJsonLine, pickVerdict, rateToStatus, readCommand,
-  runDarwinControl,
+  runDarwinControl, statusLabel,
 } from '../src/darwin-media.ts';
 import { createMediaBridge } from '../src/media.ts';
 import { NowPlayingBridge } from '../src/nowplaying.ts';
 import { channels, mediaBridgeKind } from '../src/platform.ts';
+import { pickSession, playerLabel } from '../src/players.ts';
+import { sourceOfApp } from '../src/lyrics.ts';
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
@@ -265,7 +270,8 @@ test('控制：命令送达 + 回读到状态才算 ok，并把真实状态带�
     readBack: async () => ({ ts: Date.now(), sessions: [{ app: 'QQ音乐', via: 'mediaremote', status: 'paused', title: '出现又离开', artist: '那英', album: '', posSec: 30, durSec: 200, canPlay: true, canPause: true, canNext: true, canPrev: true }] }),
   });
   assert.equal(result.ok, true);
-  assert.equal(result.status, 'paused');
+  // 回执出口是 statusText()，它按 SMTC 的写法映射；mac 的小写要在边界上转过来
+  assert.equal(result.status, 'Paused');
   assert.equal(result.title, '出现又离开');
 });
 
@@ -304,4 +310,48 @@ test('工厂：mac 上间隔被抬到不低于 1.5 秒（每跳都是一个新�
   assert.equal(fast.intervalMs >= 1500, true);
   const slow = createMediaBridge({ platform: 'darwin', intervalMs: 5000 });
   assert.equal(slow.intervalMs, 5000);
+});
+
+// ---------- mac 的播放器名（2026-11-24 真机） ----------
+
+test('mac 的播放器显示名也认得出 —— 中文、英文、裸 QQ 三种写法都要过', () => {
+  // Windows 给 exe 名，mac 给本地化显示名。只认英文时，「QQ音乐」三个中文字匹配不上，
+  // 会话会被整场丢掉：读得到歌、却挑不出来 —— 那是 1.0.2 的实况。
+  for (const name of ['QQ音乐', 'QQMusic', 'QQMusic.exe', 'QQ']) {
+    assert.equal(playerLabel(name, ''), 'QQ音乐', `认不出 ${name}`);
+  }
+  for (const name of ['网易云音乐', 'NeteaseMusic', 'CloudMusic.exe', 'cloudmusic.exe']) {
+    assert.equal(playerLabel(name, ''), '网易云音乐', `认不出 ${name}`);
+  }
+  // QQ 的文档/视频组件不是音乐播放器，别顺手认了
+  assert.equal(playerLabel('QQEXDOC', ''), 'QQEXDOC');
+});
+
+test('曲库偏好跟着播放器名走：mac 上也要能认出「在网易云听的」', () => {
+  assert.equal(sourceOfApp('网易云音乐'), 'netease');
+  assert.equal(sourceOfApp('NeteaseMusic'), 'netease');
+  assert.equal(sourceOfApp('QQ音乐'), 'qq');
+  assert.equal(sourceOfApp('QQ'), 'qq');
+  assert.equal(sourceOfApp('QQEXDOC'), null);
+  assert.equal(sourceOfApp('Spotify'), null);
+});
+
+test('中文显示名能挑出会话', () => {
+  const sessions = [{
+    app: '网易云音乐', via: 'mediaremote', status: 'playing', title: '长征', artist: '罗大佑',
+    album: '原乡', posSec: 30, durSec: 200, canPlay: true, canPause: true, canNext: true, canPrev: true,
+  }];
+  const r = pickSession(sessions, { player: 'auto', extraPlayers: '' });
+  assert.equal(r.session?.title, '长征');
+  assert.equal(r.label, '网易云音乐');
+  const only = pickSession(sessions, { player: 'netease', extraPlayers: '' });
+  assert.equal(only.session?.title, '长征');
+  const wrong = pickSession(sessions, { player: 'qq', extraPlayers: '' });
+  assert.equal(wrong.session, null, '设定只听 QQ音乐 时不该拿网易云的会话顶替');
+});
+
+test('回执状态按 SMTC 那套写，别把英文小写甩给模型', () => {
+  assert.equal(statusLabel('playing'), 'Playing');
+  assert.equal(statusLabel('paused'), 'Paused');
+  assert.equal(statusLabel(undefined), undefined);
 });

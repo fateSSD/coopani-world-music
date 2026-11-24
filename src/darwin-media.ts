@@ -32,14 +32,23 @@
  * - **AppleScript 直连某个播放器**（`tell application "Spotify"`）：只对内置字典的
  *   App 有效，QQ音乐 / 网易云都没有，一开始就不通。
  *
- * ## 已验证 / 未验证（写代码时点）
+ * ## 已验证 / 未验证
  *
- * - 已验证（**但不是在真机上，是别人在 26.x 的记录**）：`MRNowPlayingRequest` 能读到
- *   title / artist / album / duration / elapsedTime / playbackRate；`localNowPlayingPlayerPath
- *   .client.displayName` 给播放器名；`item.metadata.calculatedPlaybackPosition` 给精确进度。
- * - 未验证：**控制命令**。有人在 26.1 报「写被阻塞」，26.2 beta 又说正常。
- *   所以 `runDarwinControl()` 发完命令会**回读一次**再下结论，不靠「命令没报错」当成功。
- * - 未验证：封面（`ArtworkData` 在 osascript 里拿不到，实测为 null）。这个扩展不用封面。
+ * **2026-11-24 真机验通（macOS 26.6.2 / 25G83 / Apple M4）**，两条都是用户当场跑的：
+ * - **读**：`MRNowPlayingRequest` 这个类在这版系统上存在，`localNowPlayingItem
+ *   .nowPlayingInfo.valueForKey("kMRMediaRemoteNowPlayingInfoTitle")` 直接拿到了
+ *   正在放的歌名。所以「控制中心有歌名」之外的第二个证据也齐了 —— 我们这一侧能读到。
+ * - **控**：`MRNowPlayingController.localRouteController.sendCommandOptionsCompletion(2, …)`
+ *   发出去之后**播放器真的暂停了**。这不是「命令没报错」，是他看着界面停下来的。
+ *   本文件用的是 0/1/4/5（play/pause/next/prev）而非 2（toggle），同一个入口、同一套枚举。
+ *
+ * 还没验的（现在也不影响用）：
+ * - **字段齐不齐**：真机只验了 title 一个键。artist / album / duration / elapsed /
+ *   playbackRate 在这版系统上是否都给，等装上一版看日志。缺哪个就退到 `null` 处理，
+ *   不会崩 —— 但「进度条不准」这种软毛病要从这里查起。
+ * - **封面**（`ArtworkData` 在 osascript 里拿不到，实测为 null）。这个扩展不用封面。
+ * - **播放器显示名**：MediaRemote 给的是本地化显示名（中文系统上应是「QQ音乐」
+ *   「网易云音乐」），真机没抓这一项，所以 `players.ts` 的正则三种写法都留了。
  */
 
 import { execFile } from 'node:child_process';
@@ -140,6 +149,8 @@ const JXA_READ = `ObjC.import('Foundation');
  * 控制命令的数值。
  *
  * 取自 `MRMediaRemoteCommand`，在 AppleScript 社区文档与 mediaremote-adapter 的枚举里一致。
+ * 2026-11-24 真机验证了这套枚举本身：用户发 2（toggle）后播放器确实停了 —— 说明
+ * 「这个入口 + 这套编号」是对的，0/1/4/5 与之同源。
  * 这里**不用 toggle**：`resume` 就发 play(0)、`pause` 就发 pause(1)。toggle 在两个方向
  * 都不是幂等的，一旦状态与预期错开就会反向操作，很难排查。
  */
@@ -391,6 +402,20 @@ export class DarwinMediaBridge {
     return this.latest;
   }
 
+  /**
+   * 立刻读一次，不等下一跳。
+   *
+   * 控制命令发完之后要回读 —— 缓存最多两秒，拿它验证「刚按下的这一下」会验到按之前
+   * 的状态，看上去像「命令被吞了」。上一跳还没回来时先让一让，最多等 1.2 秒。
+   */
+  async readNow(): Promise<TickPayload | null> {
+    for (let waited = 0; this.busy && waited < 1_200 && !this.stopped; waited += 100) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!this.stopped && !this.busy) await this.tick();
+    return this.latest;
+  }
+
   health(): BridgeHealth {
     const now = Date.now();
     const fresh = this.lastLineAt !== null && now - this.lastLineAt < STALE_MS;
@@ -470,6 +495,19 @@ export interface DarwinControlOptions {
 }
 
 /**
+ * 把 mac 的小写状态写成 SMTC 那套首字母大写的写法。
+ *
+ * 理由只有一个：`statusText()` 是按 SMTC 的枚举（`Playing` / `Paused` …）做的映射，
+ * 也是工具回执唯一的出口。这里不改那一份，而是把 mac 的值对齐过去 —— 否则回执会把
+ * 英文小写 `playing` 原样甩出来，那正是 2026-11-20 修过的那类毛病。
+ */
+export function statusLabel(status: string | undefined): string | undefined {
+  if (status === 'playing') return 'Playing';
+  if (status === 'paused') return 'Paused';
+  return status;
+}
+
+/**
  * 发一条控制命令。
  *
  * **不回读就不算成功。** 有人在 macOS 26.1 上报告过「读得到、命令被吞掉」的情况，
@@ -500,7 +538,7 @@ export async function runDarwinControl(
   }
   const s = after?.sessions?.[0];
   if (!s) return { ok: true, error: '已发送，但回读不到播放状态（可能播放器没响应）' };
-  return { ok: true, app: s.app, status: s.status, title: s.title, artist: s.artist };
+  return { ok: true, app: s.app, status: statusLabel(s.status), title: s.title, artist: s.artist };
 }
 
 /** 从控制脚本的输出里取结论行：脚本只返回 `ok` 或 `error: ...`。 */

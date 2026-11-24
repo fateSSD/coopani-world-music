@@ -8,8 +8,9 @@
  * 2. **mac 的分支要能在 Windows 上跑。** 全部用注入参数（platform / home / env），
  *    不读真机环境 —— 否则在 Windows 上根本走不到 darwin 分支。
  *
- * 注意：`channels('darwin').mediaReady === false` 这组断言钉的是**当前**状态。
- * 等 MediaRemote 接通、改 true 的时候，这里也要一起改 —— 它本来就是用来提醒这件事的。
+ * 注意：`channels('darwin')` 这组断言钉的是**真机验过的现状**（2026-11-24 macOS 26.6.2
+ * 上读到了歌名、控制命令让播放器真的停了）。以后系统升级把私有接口弄坏时，先改这里 ——
+ * 它本来就是用来提醒这件事的。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -84,20 +85,29 @@ test('杀进程树：Windows 走 taskkill /T，其它平台交回调用方', () 
   assert.equal(killTreeSpec(4321, 'darwin'), null);
 });
 
-test('通道清单：Windows 全通；mac 读侧还没接（现状，接通后要改这里）', () => {
+test('通道清单：Windows 全通；mac 读侧与控制已真机验通、音频与本地深听还没有', () => {
   const win = channels('win32');
   assert.deepEqual(win, { media: 'smtc', mediaReady: true, control: true, systemAudio: true, localHearing: true });
   const mac = channels('darwin');
   assert.equal(mac.media, 'mediaremote');
-  assert.equal(mac.mediaReady, false, '接上 MediaRemote 之后，这条要改成 true');
+  // 2026-11-24 真机（macOS 26.6.2 / M4）：读到歌名、toggle 让播放器真的停了。
+  assert.equal(mac.mediaReady, true, '读侧真机验通了，闸才放开');
+  assert.equal(mac.control, true, '控制也验通了：命令发出去播放器真的响应');
+  assert.equal(mac.systemAudio, false, 'P2 才做：抓系统音频跟拍');
+  assert.equal(mac.localHearing, false, 'P2 才做：本机深听环境');
+  // 认不出的平台一律不假装能用
+  const other = channels('freebsd');
+  assert.equal(other.mediaReady, false);
+  assert.equal(other.control, false);
 });
 
 test('没接通时说人话，不静默', () => {
+  // 两个平台都接通了，就没有提示语
   assert.equal(unavailableHint('win32'), '');
-  const hint = unavailableHint('darwin');
-  assert.ok(hint.includes('macOS'));
+  assert.equal(unavailableHint('darwin'), '');
+  // 认不出的平台必须说话，不能静默降级
+  const hint = unavailableHint('freebsd');
   assert.ok(hint.length > 0);
-  // mac 上不许提 powershell —— 那边根本没有它
   assert.ok(!hint.toLowerCase().includes('powershell'));
 });
 

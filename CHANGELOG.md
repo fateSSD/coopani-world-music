@@ -1,5 +1,38 @@
 # 更新日志
 
+## 1.1.0 — 2026-11-24（支持 macOS：认歌、暂停切歌、聊歌词）
+
+macOS 上第一次能用了。**不是把 Windows 那套搬过去**——那边读的是系统媒体会话（SMTC），
+mac 走的是另一条通道，所以另写了一层实现，业务代码一行未动。
+
+- **新增 `src/darwin-media.ts`（mac 读侧）**：借系统自带的 `/usr/bin/osascript`
+  （Apple 签名、带 ObjC 桥）加载 MediaRemote，用 `MRNowPlayingRequest` 这个类读
+  「正在播放」。**为什么不能直接调 C 函数**：macOS 15.4 起 MediaRemote 只把播放信息
+  交给 Apple 签名的进程，第三方进程直调返回空字典且不报错——查证时这一点推翻了原方案。
+- **新增 `src/media.ts`（桥工厂）**：业务层只调 `createMediaBridge()`，按平台挑实现。
+  两个实现同形状（start / stop / snapshot / health），所以 world / tools / webui 的调用点
+  一处没改。
+- **控制播放接上了**：`runControl()` 在 mac 上走 `MRNowPlayingController` 发
+  play / pause / next / prev（0 / 1 / 4 / 5），**发完必须回读一次才算成功**——
+  命令发出去是不报错的，不回读就等于撒谎。
+- **修：mac 上播放器会被当成「不认识的播放器」整场丢掉。** `players.ts` 原来只认
+  `/qqmusic/i`、`/cloudmusic|netease/i`，而 mac 给的是本地化显示名（「QQ音乐」
+  「网易云音乐」），中文字匹配不上。表现是**读得到歌、却挑不出会话**。
+  `lyrics.ts` 的曲库偏好（在网易云听的优先用网易云的词）同理，一并补上。
+- **修：控制回执会把 `playing` 这种英文小写原样甩出来。** mac 的状态是小写枚举，
+  回执出口 `statusText()` 按 SMTC 的写法映射，所以在边界上转成 `Playing` / `Paused`。
+- **`os` 字段加 `darwin`**，mac 用户能在扩展市场装上了；简介三处（npm / 中文 / English）
+  都改成「Windows 10/11 与 macOS」，并写明 mac 上还没有什么。
+- **mac 上暂时没有的**：跟着真鼓点跳舞（要抓系统音频，`channels().systemAudio` 仍是
+  false）与本地深听（`localHearing` 仍是 false，可先用云端深听）。这两块是下一步。
+- **实测记录（2026-11-24，macOS 26.6.2 / 25G83 / Apple M4，用户 qlc5201314-blip 跑的）**：
+  `MRNowPlayingRequest` 读到了歌名；`sendCommandOptionsCompletion(2, …)` 发出去之后
+  播放器**真的暂停了**（他看界面的，不是「命令没报错」）。同机 `ps` 里两个播放器的进程名是
+  `NeteaseMusic` 与 `QQ`（后者极短，且同机还有 `QQEXDOC` 和一堆 `QQ Helper`，
+  所以比的是末段整名，不是子串）。
+- 测试 **234 条全过**（新增 4 条：mac 显示名、曲库偏好、中文名挑会话、状态映射）。
+  Windows 侧真机复验：仍走 SMTC 桥，读到 QQ音乐当前曲目，行为与 1.0.2 一致。
+
 ## 1.0.2 — 2026-11-24（更新「大肥鱼」主题扩展图标）
 
 - **视觉更新**：更新扩展图标为「大肥鱼」潮流霓虹赛博波普风圆形透明头像（ssets/icon.png，512×512）。

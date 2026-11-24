@@ -22,12 +22,15 @@
  * - **Windows 一栏是 v1.0.0 的原文，一字未改**：`LOCALAPPDATA` 缺失时回落 `homedir()`
  *   （不是 `AppData\Local`，别"顺手修正"）、`tasklist /NH /FO CSV` 的**带引号整名匹配**、
  *   `venv\Scripts\python.exe`。改这里之前先看 `test/platform.test.mjs` 钉住的期望值。
- * - **macOS 一栏目前只有一条真机结论**：`ps -Ao comm=` 输出的是可执行文件全路径、末段是
+ * - **macOS 一栏有两条真机结论**：① `ps -Ao comm=` 输出的是可执行文件全路径、末段是
  *   不带后缀的进程名，且要容忍 `X.app` / `X Helper` 这类派生进程（2026-11-12 炉石扩展
- *   mac 真机验证）。其余按 macOS 惯例推：`~/Library/Application Support` 落点、
- *   播放器进程名（`QQMusic` / `NeteaseMusic` 两个名字尚未真机确认）。
- * - **`mediaReady: false` 是诚实的现状**：mac 的读侧要走 MediaRemote（自研，BSD-3），
- *   还没接。在它接上之前，mac 上装了也只能聊——不能装作能读。
+ *   mac 真机验证）；② 本机两个播放器的真实进程名是 **`NeteaseMusic`** 与 **`QQ`**
+ *   （`/Applications/NeteaseMusic.app/Contents/MacOS/NeteaseMusic`、
+ *   `/Applications/QQ.app/Contents/MacOS/QQ`，2026-11-24 真机 `ps` 输出）。
+ *   **注意 `QQ` 这个名极短**：同机还有 `QQEXDOC`、`QQ Helper` 一串派生进程，所以这里
+ *   比的是「末段整名相等」，不是子串 —— 按子串匹配会把视频/文档组件当成音乐播放器。
+ *   另外 mac 上**没有** `CloudMusic` 这个名字（那是 Windows 的叫法）。
+ * - **`mediaReady: true` 是 2026-11-24 真机验过之后才放开的**，不是代码写完就放开。
  */
 
 import { homedir } from 'node:os';
@@ -187,19 +190,23 @@ export interface Channels {
 /**
  * 本版本的通道清单。
  *
- * mac 的 `mediaReady: false` 会在接上 MediaRemote 之后改 true；在那之前所有上层判断
- * 都靠这一处，不要散在别处写平台判断。
+ * 所有上层判断都靠这一处，不要散在别处写平台判断。
  *
- * 2026-11-23 状态：mac 的读侧**代码已写**（`src/darwin-media.ts`，osascript 借 Apple
- * 签名读 MediaRemote），但**没有真机跑过**，所以这三项仍是 false —— 按第二条规矩，
- * 闸要跟「通道真的接通」同步，不是跟「代码写完」同步。真机验过再一起放开。
+ * **2026-11-24 mac 读侧与控制在真机上验通了**（macOS 26.6.2 / 25G83 / Apple M4，
+ * 报障用户 qlc5201314-blip 跑的）：
+ * - `MRNowPlayingRequest.localNowPlayingItem.nowPlayingInfo` 读到了歌名（「长征」）；
+ * - `MRNowPlayingController.localRouteController.sendCommandOptionsCompletion(2, …)`
+ *   发出去之后播放器**真的暂停了** —— 不是「命令没报错」，是他看着界面停的。
+ *
+ * 所以 `mediaReady` / `control` 放开；`systemAudio`（抓系统音频跟拍）与 `localHearing`
+ * （本机深听）仍是 false —— 那是 P2，一行没写。**闸跟「真机验过」同步，不是跟「代码写完」同步。**
  */
 export function channels(platform: Platform = process.platform): Channels {
   if (platform === 'win32') {
     return { media: 'smtc', mediaReady: true, control: true, systemAudio: true, localHearing: true };
   }
   if (platform === 'darwin') {
-    return { media: 'mediaremote', mediaReady: false, control: false, systemAudio: false, localHearing: false };
+    return { media: 'mediaremote', mediaReady: true, control: true, systemAudio: false, localHearing: false };
   }
   return { media: 'mediaremote', mediaReady: false, control: false, systemAudio: false, localHearing: false };
 }
@@ -225,7 +232,8 @@ export function unavailableHint(platform: Platform = process.platform): string {
   const c = channels(platform);
   if (c.mediaReady) return '';
   if (platform === 'darwin') {
-    return 'macOS 版的播放器读取还在做：现在能装、能聊，但还认不出你在放什么歌。';
+    // 读侧已经验通，这句只剩「以后坏了」的分支：多半是系统升级动了那个私有接口。
+    return 'macOS 上读不到系统的正在播放 —— 可能是系统升级改了那个私有接口。';
   }
   return '这个系统还没有接通播放器读取。';
 }

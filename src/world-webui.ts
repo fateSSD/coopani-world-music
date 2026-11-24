@@ -19,7 +19,7 @@ import { MUSIC_ID, musicConfigGroups, type MusicConfigSection } from './config.t
 import { ensureFigurePack, type FigurePackResult } from './figure-pack.ts';
 
 import { isPeerRunning } from './peer.ts';
-import { mediaSourceNoun, readerNoun, unavailableHint } from './platform.ts';
+import { channels, mediaSourceNoun, readerNoun, unavailableHint } from './platform.ts';
 import { resolveLayout, sameDir, stillWritable, type StorageLayout } from './storage.ts';
 import { NowPlayingBridge, findConHost, findPowerShell, isProcessAlive, type TickPayload } from './nowplaying.ts';
 import { pickSession, playerLabel, type PickResult } from './players.ts';
@@ -286,13 +286,22 @@ export const webuiMethods: Record<string, any> = {
       return { label: '深听', state: 'offline', hint: '关着。只有拍子和响度，没有调性、和弦、旋律和乐器。' };
     }
     if (mode === 'local') {
-      return this.localHearingReady()
-        ? { label: '深听', state: 'online', hint: '本地：本机分轨，音频不出这台机器，也不联网。' }
-        : {
+      if (this.localHearingReady()) {
+        return { label: '深听', state: 'online', hint: '本地：本机分轨，音频不出这台机器，也不联网。' };
+      }
+      // mac 上连安装脚本都还没有，说「装一遍约 500MB」等于让人去装一个不存在的东西
+      if (!channels(process.platform).localHearing) {
+        return {
           label: '深听',
           state: 'error',
-          hint: `选了本地，但这台机器还没装好（找不到 ${HEARING_PYTHON}）。装一遍约 500MB，或者把「走哪条路」切成云端。`,
+          hint: '这台系统还没有本地深听（macOS 版还在做）。把「走哪条路」切成云端，填个密钥就能用。',
         };
+      }
+      return {
+        label: '深听',
+        state: 'error',
+        hint: `选了本地，但这台机器还没装好（找不到 ${HEARING_PYTHON}）。装一遍约 500MB，或者把「走哪条路」切成云端。`,
+      };
     }
     const keySet = Boolean((this.cfg.hearingCloudKey ?? '').trim());
     return keySet

@@ -400,7 +400,9 @@ export const toolMethods: Record<string, any> = {
     }
     const pick = this.lastPick;
     const match = pick?.session?.app ?? '';
-    const result = await runControl(action as ControlAction, match);
+    // mac 上没有「脚本自己回读」，得给一个立刻重读的口子；Windows 那侧用不到这个参数。
+    const readBack = this.bridge?.readNow ? this.bridge.readNow.bind(this.bridge) : undefined;
+    const result = await runControl(action as ControlAction, match, 10_000, readBack);
     if (!result.ok) {
       return `没能按下去：${result.error ?? '播放器拒绝了这次操作'}。${result.app ? `（${result.app}）` : ''}`;
     }

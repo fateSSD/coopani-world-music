@@ -6,7 +6,9 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { findPowerShell } from './nowplaying.ts';
+import { findPowerShell, type TickPayload } from './nowplaying.ts';
+import { runDarwinControl } from './darwin-media.ts';
+import { mediaBridgeKind } from './platform.ts';
 
 export const CONTROL_SCRIPT = fileURLToPath(new URL('../scripts/control.ps1', import.meta.url));
 
@@ -43,8 +45,23 @@ export function statusText(status: string | undefined): string {
 /**
  * 跑一次控制脚本。任何失败都以 {ok:false,error} 返回，不抛——
  * 工具回执要让模型看见"为什么没按下去"，而不是让调用直接失败。
+ *
+ * **mac 不走这里。** 那边没有 PowerShell、也没有 SMTC，走的是
+ * `darwin-media.ts` 里的 `runDarwinControl()`（osascript 发 MediaRemote 命令）。
+ * 分发按 `mediaBridgeKind()` 判，与读侧同一个判据 —— 加平台时只改一处。
+ *
+ * `readBack`：mac 上发完命令要立刻重读一次才知道按没按下去（命令发出去是不报错的）。
+ * Windows 侧由脚本自己回读，用不到这个参数。
  */
-export function runControl(action: ControlAction, match: string, timeoutMs = 10_000): Promise<ControlResult> {
+export function runControl(
+  action: ControlAction,
+  match: string,
+  timeoutMs = 10_000,
+  readBack?: () => Promise<TickPayload | null>,
+): Promise<ControlResult> {
+  if (mediaBridgeKind() === 'mediaremote') {
+    return runDarwinControl(action, { readBack });
+  }
   return new Promise((resolve) => {
     const exe = findPowerShell();
     if (!exe) return resolve({ ok: false, error: '找不到 powershell.exe' });

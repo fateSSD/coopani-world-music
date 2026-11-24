@@ -19,6 +19,11 @@ export interface MediaBridge {
   stop(): void;
   snapshot(): TickPayload | null;
   health(): BridgeHealth;
+  /**
+   * 立刻重读一次。**可选** —— Windows 那侧的控制脚本自己会回读，不需要它；
+   * mac 上必须要有，否则验证「刚按下的这一下」拿到的是最多两秒前的缓存。
+   */
+  readNow?(): Promise<TickPayload | null>;
 }
 
 export interface MediaBridgeOptions {

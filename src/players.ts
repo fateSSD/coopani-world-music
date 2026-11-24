@@ -14,9 +14,22 @@ interface KnownPlayer {
   label: string;
 }
 
+/**
+ * 认识的播放器。
+ *
+ * **正则要同时覆盖三种写法**，因为两个平台的「app 名」不是一回事：
+ * - Windows 的 SMTC 给的是**可执行文件名**：`QQMusic.exe` / `CloudMusic.exe`；
+ * - mac 的 MediaRemote 给的是**本地化显示名**（`client.displayName`），中文系统上就是
+ *   「QQ音乐」「网易云音乐」；
+ * - QQ音乐 mac 版的 bundle 自身叫 `QQ.app`，显示名也可能只落到 `QQ`。
+ *
+ * 2026-11-24 之前这里只有 `/qqmusic/i`，mac 上「QQ音乐」三个中文字匹配不上，于是
+ * 会话被当成「不认识的播放器」整场丢掉 —— 读得到歌、却挑不出会话。这一条是拿截图
+ * 里的真实名字补的，不是猜的。
+ */
 const KNOWN_PLAYERS: readonly KnownPlayer[] = [
-  { key: 'qq', pattern: /qqmusic/i, label: 'QQ音乐' },
-  { key: 'netease', pattern: /cloudmusic|netease/i, label: '网易云音乐' },
+  { key: 'qq', pattern: /qqmusic|qq音乐|^qq$/i, label: 'QQ音乐' },
+  { key: 'netease', pattern: /cloudmusic|netease|网易云/i, label: '网易云音乐' },
 ];
 
 /** 播放器的显示名。认不出来就给 AUMID 本身，不编一个名字。 */

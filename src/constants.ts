@@ -12,7 +12,7 @@ import type { Feel, Phase } from './vibe.ts';
  * （life / journey / pz / 炉石都是这么做的 —— 同一个隐患，运行时读 package.json
  * 在打包后的路径里不可靠，暂时没有更好的办法。）
  */
-export const PANEL_VERSION = '1.0.1';
+export const PANEL_VERSION = '1.1.0';
 
 /**
  * 随包带的形象包（`assets/figure-groove`）。
@@ -23,7 +23,7 @@ export const PANEL_VERSION = '1.0.1';
 export const FIGURE_PACK_SOURCE = fileURLToPath(new URL('../assets/figure-groove', import.meta.url));
 
 /** 构建标记。每次改行为都改一下——"改了没效果"和"改了改错了"靠它两秒分开。 */
-export const BUILD_TAG = 'b2026-11-20.figure.92';
+export const BUILD_TAG = 'b2026-11-24.mac.93';
 
 /**
  * 等歌词的上限。超时就不给词，抓取在后台继续。

@@ -141,12 +141,18 @@ function artistParts(s: string): string[] {
 /** 这些后缀意味着"不是原唱那一版"，歌词可能完全不同（改编、纯伴奏）。 */
 const SUSPECT_SUFFIX = /(伴奏|纯音乐|instrumental|karaoke|remix|dj|翻唱|cover|片段|铃声|试听)/i;
 
-/** 进程名 → 曲库标识。认不出来的（Spotify 之类）返回 null，不参与源偏好。 */
+/**
+ * 进程名 / 显示名 → 曲库标识。认不出来的（Spotify 之类）返回 null，不参与源偏好。
+ *
+ * 两个平台的 app 名不是一回事：Windows 给 `cloudmusic.exe` / `QQMusic.exe`，
+ * mac 给的是本地化显示名「网易云音乐」/「QQ音乐」（也可能是 `QQ`）。只认英文的话，
+ * mac 上这个偏好永远不成立 —— 表现是「在网易云听歌、却拿 QQ 的词」这种软错误。
+ */
 export function sourceOfApp(app?: string): TrackSource | null {
   if (!app) return null;
   const a = app.toLowerCase();
-  if (a.includes('cloudmusic') || a.includes('netease')) return 'netease';
-  if (a.includes('qqmusic')) return 'qq';
+  if (a.includes('cloudmusic') || a.includes('netease') || a.includes('网易云')) return 'netease';
+  if (a.includes('qqmusic') || a.includes('qq音乐') || a === 'qq') return 'qq';
   return null;
 }
 
