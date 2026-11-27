@@ -116,6 +116,9 @@ export const toolMethods: Record<string, any> = {
     /* 没说过就是没说过 —— **不拿 vibe 冒充态度**。 */
     const like = track && this.store ? this.store.likeOf(trackKey(track)) : null;
     const wants = this.store?.wants(8) ?? [];
+    const wantTotal = this.store?.wantCount() ?? 0;
+    const liked = this.store?.likedTracks(10) ?? [];
+    const likeTotal = this.store?.likedCount() ?? 0;
 
     const feelText = vibe ? FEEL_TEXT[vibe.feel] : '';
     const verdictWord = like
@@ -129,7 +132,8 @@ export const toolMethods: Record<string, any> = {
         ? `这首：《${track.title || '未知'}》${track.artist ? ` - ${track.artist}` : ''}${feelText ? `（${feelText}${vibe?.genre ? ` · ${vibe.genre}` : ''}）` : ''}`
         : '这首：没在放',
       `态度：${verdictWord || '还没说过'}${like?.why ? `（${like.why}）` : ''}`,
-      `想听：${wants.length} 首`,
+      `喜欢：${likeTotal} 首`,
+      `想听：${wantTotal} 首`,
       `今天：${todayRecords.length} 首${todayMs > 0 ? ` · ${humanDuration(todayMs)}` : ''}`,
       `灯：${(ui.lamps ?? []).map((l) => `${l.label} ${l.state}`).join(' / ')}`,
     ].join('\n');
@@ -158,7 +162,10 @@ export const toolMethods: Record<string, any> = {
         }
         : null,
       like: like ? { verdict: like.verdict, word: verdictWord, why: like.why, at: like.ts } : null,
-      wants: wants.map((w) => ({ title: w.title, artist: w.artist })),
+      likes: liked.map((x) => ({ title: x.title, artist: x.artist, why: x.why, at: x.ts })),
+      likeTotal,
+      wants: wants.map((w) => ({ title: w.title, artist: w.artist, why: w.why, url: w.url })),
+      wantTotal,
       today: { count: todayRecords.length, msText: todayMs > 0 ? humanDuration(todayMs) : '' },
       lamps: ui.lamps ?? [],
       /* 形象包：面板上要有个「装」的按钮，就得知道现在是什么状态。 */
@@ -475,6 +482,7 @@ export const toolMethods: Record<string, any> = {
     if (!best) return `搜到 ${tracks.length} 首，但没有一首是完整的歌（都太短），没挑。`;
 
     const attempt = await playAttempt(best);
+    const recentlyPlayed = this.store.recentlyFulfilledWant(best, 6 * 3600_000, Date.now());
     const saved = this.store.addWant({
       source: best.source,
       id: best.id,
@@ -492,6 +500,9 @@ export const toolMethods: Record<string, any> = {
 
     const parts: string[] = [`挑了 ${describeTrack(best)}（${sourceLabel(best.source)}）。`];
     parts.push(saved.added ? `已记进想听清单，第 ${saved.total} 首。` : '这首之前就记过了。');
+    if (saved.added && recentlyPlayed) {
+      parts.push('（注意：这首几小时内刚听过并从想听里划掉过，重新挂回去了。）');
+    }
     parts.push(arm);
     if (attempt.ok) parts.push(`已经在 ${sourceLabel(best.source)} 上放了。`);
     else parts.push(`${attempt.reason}。链接在这里，点开就能放：${best.url}`);
@@ -543,8 +554,8 @@ export const toolMethods: Record<string, any> = {
   /** 想听清单的文本版。没给关键词时走这条——比回一句"请给个关键词"有用。 */
   wishlistText(): string {
     const wants: WantItem[] = this.store.wants(10);
-    if (wants.length === 0) return '想听清单还是空的。给我一个关键词，我去搜一首。';
-    const lines = [`想听清单（${this.store.wantCount()} 首，新的在前）：`];
+    if (wants.length === 0) return '想听清单还是空的（听过的会自动划掉）。给我一个关键词，我去搜一首。';
+    const lines = [`想听清单（${this.store.wantCount()} 首，还没听过的，新的在前）：`];
     wants.forEach((w, i) => {
       const who = w.artist ? ` — ${w.artist}` : '';
       const why = w.why ? `｜${w.why}` : '';

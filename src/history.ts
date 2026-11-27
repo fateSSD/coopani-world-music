@@ -10,8 +10,47 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { matchScore } from './lyrics.ts';
+import type { TrackSource } from './picker.ts';
 import { sameDir } from './storage.ts';
 import type { FinishedTrack, Track } from './tracker.ts';
+
+/** 想听清单与当前播放曲目的匹配阈值：对齐 lyrics.ts 的 70 分门槛（防同名翻唱误核销）。 */
+export const WANT_MATCH_MIN = 70;
+
+function wantIdentityKey(source: string, title: string, artist: string): string {
+  return `${source}|${title}\u0001${artist}`;
+}
+
+function wantMatchScore(
+  cand: { title: string; artist: string; source: string; durSec: number },
+  track: { title: string; artist: string; app?: string; durSec?: number | null },
+): number {
+  return matchScore(
+    {
+      title: cand.title,
+      artist: cand.artist,
+      source: (cand.source === 'qq' ? 'qq' : 'netease') as TrackSource,
+      durSec: cand.durSec,
+    },
+    {
+      title: track.title,
+      artist: track.artist,
+      app: track.app,
+      durSec: typeof track.durSec === 'number' && track.durSec > 0 ? track.durSec : undefined,
+    },
+  );
+}
+
+interface WantEntry {
+  op: 'add' | 'done';
+  ts: number;
+  source: string;
+  title: string;
+  artist: string;
+  durSec: number;
+  item?: WantItem;
+}
 
 export interface ListenRecord {
   /** 曲目开始时间（epoch ms）。 */
@@ -357,34 +396,9 @@ export class ListenStore {
 
   /* ---------- 想听清单 ---------- */
 
-  /**
-   * 记一首"她想听"的歌。
-   *
-   * 为什么需要它：她能搜、能挑，但放不出来（原因见 picker.ts 头部的实测记录）。
-   * 只丢一句话，过五分钟就散了；落到清单里，下次还能接着说"上次那首你还没放"。
-   * 同一首（同源 + 歌名 + 歌手）只留一条 —— 不然她能一天提十遍。
-   */
-  addWant(item: Omit<WantItem, 'ts'>, at: number): { added: boolean; total: number } {
-    const existing = this.wants(500);
-    const dup = existing.find(
-      (w) => w.title === item.title && w.artist === item.artist && w.source === item.source,
-    );
-    if (dup) return { added: false, total: existing.length };
-    const line = `${JSON.stringify({ ts: at, ...item })}\n`;
-    if (!this.writeLine(this.wantsPath, line)) {
-      const spare = this.spareRoot;
-      if (!spare || !this.writeLine(join(spare, 'music-wants.jsonl'), line)) {
-        return { added: false, total: existing.length };
-      }
-      this.fellBack = true;
-    }
-    return { added: true, total: existing.length + 1 };
-  }
-
-  /** 想听清单，新的在前。两处目录合并（查重也跨两处，不会重复记同一首）。 */
-  wants(limit = 10): WantItem[] {
-    const seen = new Set<string>();
-    const all: WantItem[] = [];
+  /** 跨所有读取目录把同一份 JSONL 的 add / done 合并成每首歌的最新状态。 */
+  private wantEntries(): Map<string, WantEntry> {
+    const entries = new Map<string, WantEntry>();
     for (const root of this.roots) {
       const file = join(root, 'music-wants.jsonl');
       if (!existsSync(file)) continue;
@@ -401,30 +415,160 @@ export class ListenStore {
           const w = JSON.parse(trimmed);
           const title = String(w?.title ?? '').trim();
           if (!title) continue;
-          const key = `${Number(w.ts) || 0}|${String(w.source ?? '')}|${title}\u0001${String(w.artist ?? '')}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          all.push({
-            ts: Number(w.ts) || 0,
-            source: String(w.source ?? ''),
-            id: String(w.id ?? ''),
-            mid: String(w.mid ?? ''),
-            title,
-            artist: String(w.artist ?? ''),
-            album: String(w.album ?? ''),
-            durSec: Number(w.durSec) || 0,
-            url: String(w.url ?? ''),
-            why: String(w.why ?? ''),
-          });
+          const op: 'add' | 'done' = w?.op === 'done' ? 'done' : 'add';
+          const ts = Number(w.ts) || 0;
+          const source = String(w.source ?? '');
+          const artist = String(w.artist ?? '');
+          const durSec = Number(w.durSec) || 0;
+          const key = wantIdentityKey(source, title, artist);
+          const prev = entries.get(key);
+          if (!prev || ts > prev.ts || (ts === prev.ts && op === 'done' && prev.op !== 'done')) {
+            if (op === 'add') {
+              const item: WantItem = {
+                ts,
+                source,
+                id: String(w.id ?? ''),
+                mid: String(w.mid ?? ''),
+                title,
+                artist,
+                album: String(w.album ?? ''),
+                durSec,
+                url: String(w.url ?? ''),
+                why: String(w.why ?? ''),
+              };
+              entries.set(key, { op: 'add', ts, source, title, artist, durSec, item });
+            } else {
+              entries.set(key, {
+                op: 'done',
+                ts,
+                source,
+                title,
+                artist,
+                durSec: durSec || prev?.durSec || 0,
+                item: prev?.item,
+              });
+            }
+          }
         } catch { /* 坏行跳过 */ }
       }
     }
-    return all.slice(-Math.max(1, limit)).reverse();
+    return entries;
+  }
+
+  /**
+   * 记一首"她想听"的歌。
+   *
+   * 为什么需要它：她能搜、能挑，但放不出来（原因见 picker.ts 头部的实测记录）。
+   * 只丢一句话，过五分钟就散了；落到清单里，下次还能接着说"上次那首你还没放"。
+   * 同一首（同源 + 歌名 + 歌手）只留一条 —— 不然她能一天提十遍。
+   * 已经听过（done）的歌如果再次被挑中，会以更新的 ts 重新挂回清单。
+   */
+  addWant(item: Omit<WantItem, 'ts'>, at: number): { added: boolean; total: number } {
+    const cleanTitle = item.title.trim();
+    if (!cleanTitle) return { added: false, total: this.wantCount() };
+    const entries = this.wantEntries();
+    const key = wantIdentityKey(item.source, cleanTitle, item.artist);
+    const prev = entries.get(key);
+    let activeCount = 0;
+    for (const e of entries.values()) {
+      if (e.op === 'add' && e.item) activeCount += 1;
+    }
+    if (prev?.op === 'add') return { added: false, total: activeCount };
+    const ts = prev ? Math.max(at, prev.ts + 1) : at;
+    const line = `${JSON.stringify({ ts, ...item, title: cleanTitle })}\n`;
+    if (!this.writeLine(this.wantsPath, line)) {
+      const spare = this.spareRoot;
+      if (!spare || !this.writeLine(join(spare, 'music-wants.jsonl'), line)) {
+        return { added: false, total: activeCount };
+      }
+      this.fellBack = true;
+    }
+    return { added: true, total: activeCount + 1 };
+  }
+
+  /** 想听清单，新的在前。两处目录合并，已核销（done）的不再出现。 */
+  wants(limit = 10): WantItem[] {
+    const all: WantItem[] = [];
+    for (const entry of this.wantEntries().values()) {
+      if (entry.op === 'add' && entry.item) all.push(entry.item);
+    }
+    return all
+      .sort((a, b) => b.ts - a.ts)
+      .slice(0, Math.max(1, limit));
   }
 
   /** 清单一共几首 —— 给设置页和徽章用。 */
   wantCount(): number {
     return this.wants(1000).length;
+  }
+
+  /** 找清单里与当前正在放的歌最匹配的一条（没命中返回 null）。 */
+  matchWant(track: { title: string; artist: string; app?: string; durSec?: number | null }): WantItem | null {
+    if (!track.title?.trim()) return null;
+    let best: { item: WantItem; score: number } | null = null;
+    for (const w of this.wants(1000)) {
+      const score = wantMatchScore(w, track);
+      if (score < WANT_MATCH_MIN) continue;
+      if (!best || score > best.score || (score === best.score && w.ts > best.item.ts)) {
+        best = { item: w, score };
+      }
+    }
+    return best?.item ?? null;
+  }
+
+  /**
+   * 把这首歌在想听清单里匹配到的条目核销掉（append 一行 op:'done' 墓碑）。
+   * 同一首可能在不同音源各挂过一条，放过一次把匹配的都划掉。
+   */
+  completeWantsForTrack(
+    track: { title: string; artist: string; app?: string; durSec?: number | null },
+    at: number,
+  ): WantItem[] {
+    if (!track.title?.trim()) return [];
+    const matched = this.wants(1000).filter((w) => wantMatchScore(w, track) >= WANT_MATCH_MIN);
+    const fulfilled: WantItem[] = [];
+    for (const w of matched) {
+      const doneTs = Math.max(at, w.ts + 1);
+      const line = `${JSON.stringify({
+        ts: doneTs,
+        op: 'done',
+        source: w.source,
+        id: w.id,
+        mid: w.mid,
+        title: w.title,
+        artist: w.artist,
+        durSec: w.durSec,
+      })}\n`;
+      if (!this.writeLine(this.wantsPath, line)) {
+        const spare = this.spareRoot;
+        if (!spare || !this.writeLine(join(spare, 'music-wants.jsonl'), line)) continue;
+        this.fellBack = true;
+      }
+      fulfilled.push(w);
+    }
+    return fulfilled;
+  }
+
+  /** 最近这段时间刚听过并从想听里划掉过吗 —— 避免她搜歌时又把刚听完的挑一遍。 */
+  recentlyFulfilledWant(
+    track: { title: string; artist: string; source?: string; durSec?: number },
+    withinMs: number,
+    at: number,
+  ): boolean {
+    if (!track.title?.trim() || withinMs <= 0) return false;
+    for (const entry of this.wantEntries().values()) {
+      if (entry.op !== 'done') continue;
+      if (at - entry.ts < 0 || at - entry.ts > withinMs) continue;
+      if (wantMatchScore(entry, {
+        title: track.title,
+        artist: track.artist,
+        app: track.source,
+        durSec: track.durSec,
+      }) >= WANT_MATCH_MIN) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /* ---------- 她觉得这首怎么样 ---------- */
@@ -486,11 +630,30 @@ export class ListenStore {
     return this.likes(2000).find((x) => x.key === key) ?? null;
   }
 
-  /** 清空想听清单。也是读时现读，删掉即刻生效。两处都删。 */
-  clearWants(): boolean {
+  /** 她明确表态「喜欢」的歌，按最新时间倒序，同歌名+歌手去重。 */
+  likedTracks(limit = 20): LikeItem[] {
+    const seen = new Set<string>();
+    const out: LikeItem[] = [];
+    for (const item of this.likes(5000)) {
+      if (item.verdict !== 'like') continue;
+      const normKey = `${item.title.trim().toLowerCase()}\u0001${item.artist.trim().toLowerCase()}`;
+      if (seen.has(normKey)) continue;
+      seen.add(normKey);
+      out.push(item);
+      if (out.length >= Math.max(1, limit)) break;
+    }
+    return out;
+  }
+
+  /** 她明确表态「喜欢」的歌一共有几首（去重后）。 */
+  likedCount(): number {
+    return this.likedTracks(5000).length;
+  }
+
+  private clearFileAcrossRoots(filename: string): boolean {
     let ok = true;
     for (const root of this.roots) {
-      const file = join(root, 'music-wants.jsonl');
+      const file = join(root, filename);
       try {
         if (existsSync(file)) unlinkSync(file);
       } catch {
@@ -498,6 +661,16 @@ export class ListenStore {
       }
     }
     return ok;
+  }
+
+  /** 清空想听清单。也是读时现读，删掉即刻生效。两处都删。 */
+  clearWants(): boolean {
+    return this.clearFileAcrossRoots('music-wants.jsonl');
+  }
+
+  /** 清空单曲态度记录（她喜欢听什么）。两处都删。 */
+  clearLikes(): boolean {
+    return this.clearFileAcrossRoots('music-likes.jsonl');
   }
 }
 

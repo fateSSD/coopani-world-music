@@ -117,7 +117,7 @@ export const webuiMethods: Record<string, any> = {
     const wantLine = !this.cfg.selfPick
       ? '（她自己挑歌的功能关着，清单不用管）'
       : (wants.length
-        ? `想听清单（共 ${wantTotal} 首，新的在前）：\n${wants.map((w) => `· 《${w.title}》${w.artist ? ` — ${w.artist}` : ''}${w.why ? `｜${w.why}` : ''}`).join('\n')}`
+        ? `想听清单（共 ${wantTotal} 首，还没听过的，新的在前；播过就会自动划掉）：\n${wants.map((w) => `· 《${w.title}》${w.artist ? ` — ${w.artist}` : ''}${w.why ? `｜${w.why}` : ''}`).join('\n')}`
         : '（想听清单还空着）');
 
     return {
@@ -179,9 +179,11 @@ export const webuiMethods: Record<string, any> = {
     const days = this.store?.days() ?? [];
     /* `?. ` 不是防御性编程 —— 这个方法的注释就写着「webUi() 可能在 start 之前被调（数据页签要读它）」。 */
     const wantCount = this.store?.wantCount() ?? 0;
+    const likeCount = this.store?.likedCount() ?? 0;
     const badges = [
       { label: '今天', value: `${todayRecords.length} 首`, tone: todayRecords.length ? 'on' as const : 'off' as const },
       { label: '听了', value: todayMs > 0 ? humanDuration(todayMs) : '还没开始', tone: todayMs > 0 ? 'plain' as const : 'off' as const },
+      { label: '喜欢', value: likeCount ? `${likeCount} 首` : '空的', tone: likeCount ? 'on' as const : 'plain' as const },
       { label: '想听', value: wantCount ? `${wantCount} 首` : '空的', tone: wantCount ? 'on' as const : 'plain' as const },
       { label: '记录', value: days.length ? `${days.length} 天` : '空的', tone: 'plain' as const },
     ];
@@ -200,7 +202,7 @@ export const webuiMethods: Record<string, any> = {
         {
           id: 'now',
           title: '她此刻',
-          description: '在放什么、她怎么听这首、她想听什么。',
+          description: '在放什么、她怎么听这首、她喜欢听什么、她想听什么。',
         },
       ],
       invoke: (panel: string, method: string, args?: unknown) => this.panelInvoke(panel, method, args),
@@ -480,12 +482,25 @@ export const webuiMethods: Record<string, any> = {
         label: '想听清单',
         kind: 'disk',
         location: join(mem, 'music-wants.jsonl'),
-        note: '她自己搜出来、想听还没放的歌，带上当时的原因和链接。清掉之后她就不记得欠你哪几首了。',
+        note: '她自己搜出来、想听还没放的歌，带上当时的原因和链接；播过（听满 20 秒）会自动划掉。清掉之后她就不记得欠你哪几首了。',
         stat: () => {
           const n = store.wantCount();
           return n ? `${n} 首。` : '还是空的。';
         },
         clear: () => (store.clearWants() ? '想听清单已清空。' : '文件删不掉，可能被别的程序占着。'),
+      });
+      parts.push({
+        key: 'likes',
+        label: '喜欢听的歌',
+        kind: 'disk',
+        location: join(mem, 'music-likes.jsonl'),
+        note: '她听完明确表态「喜欢 / 说不上 / 不喜欢」的单曲记录；面板的「她喜欢听什么」展示其中标为喜欢的歌。清掉之后她就不记得以前表过态的单曲了。',
+        stat: () => {
+          const liked = store.likedCount();
+          const total = store.likes(5000).length;
+          return total ? `喜欢 ${liked} 首（共表态 ${total} 首）。` : '还没表态过。';
+        },
+        clear: () => (store.clearLikes() ? '喜欢听的歌（单曲态度）已清空。' : '文件删不掉，可能被别的程序占着。'),
       });
       parts.push({
         key: 'soul',

@@ -2119,3 +2119,173 @@ test('欢快的柔不许说困', () => {
   assert.match(stateAngle('soft', true), /醒着|不许说困|不许说想睡/, '欢快的柔要走"醒着"那一版');
   assert.match(stateAngle('soft', false), /可以困/, '慢柔照旧可以困');
 });
+
+/* ================= 双容器拆分（她喜欢听什么 / 她想听什么）与想听自动核销 ================= */
+
+test('想听清单核销：模糊匹配、不同歌手不误删、双源同名一并清、重加可恢复', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'music-want-done-'));
+  try {
+    const store = new ListenStore(dir);
+    store.addWant({
+      source: 'qq', id: '1', mid: 'm1', title: '小半', artist: '陈粒',
+      album: '小梦大半', durSec: 297, url: 'https://y.qq.com/1', why: '想听人声',
+    }, 1_000);
+    store.addWant({
+      source: 'netease', id: '2', mid: '', title: '小半', artist: '陈粒',
+      album: '', durSec: 297, url: 'https://music.163.com/2', why: '网易云也挂了一笔',
+    }, 2_000);
+    store.addWant({
+      source: 'qq', id: '3', mid: 'm3', title: '月光', artist: '德彪西',
+      album: '', durSec: 148, url: 'https://y.qq.com/3', why: '第二首',
+    }, 3_000);
+
+    // 同名但不同歌手：不能误删
+    const wrong = store.completeWantsForTrack({
+      title: '小半', artist: '某网红翻唱', app: 'QQMusic.exe', durSec: 297,
+    }, 4_000);
+    assert.equal(wrong.length, 0);
+    assert.equal(store.wantCount(), 3);
+
+    // 播放带版本尾巴的同一首：两个音源上的《小半》一次清掉，下一首《月光》顶上第 1 位
+    const done = store.completeWantsForTrack({
+      title: '小半 (Live)', artist: '陈粒', app: 'QQMusic.exe', durSec: 297,
+    }, 5_000);
+    assert.equal(done.length, 2);
+    assert.deepEqual(store.wants(10).map((w) => w.title), ['月光']);
+
+    // 近期刚划掉的能查到（时间窗外查不到）
+    assert.equal(store.recentlyFulfilledWant({ title: '小半', artist: '陈粒', source: 'qq', durSec: 297 }, 60_000, 10_000), true);
+    assert.equal(store.recentlyFulfilledWant({ title: '小半', artist: '陈粒', source: 'qq', durSec: 297 }, 60_000, 100_000), false);
+
+    // 之后她再次想听同一首，可以重新挂回清单
+    const readded = store.addWant({
+      source: 'qq', id: '1', mid: 'm1', title: '小半', artist: '陈粒',
+      album: '小梦大半', durSec: 297, url: 'https://y.qq.com/1', why: '今天又想听了',
+    }, 10_000);
+    assert.equal(readded.added, true);
+    assert.equal(readded.total, 2);
+    assert.equal(store.wants(10)[0].title, '小半');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('喜欢听什么：只收最新表态为 like 的歌，同歌不同播放器去重', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'music-likes-list-'));
+  try {
+    const store = new ListenStore(dir);
+    store.addLike({ key: 'QQMusic.exe\u0001激動\u0001RAISE A SUILEN', title: '激動', artist: 'RAISE A SUILEN', verdict: 'like', why: '唱得冲' }, 1_000);
+    store.addLike({ key: 'cloudmusic.exe\u0001激動\u0001RAISE A SUILEN', title: '激動', artist: 'RAISE A SUILEN', verdict: 'like', why: '网易云再标一次' }, 2_000);
+    store.addLike({ key: 'QQMusic.exe\u0001小酒歌\u0001郝云', title: '小酒歌', artist: '郝云', verdict: 'meh', why: '一般' }, 3_000);
+    store.addLike({ key: 'QQMusic.exe\u0001恋\u0001星野源', title: '恋', artist: '星野源', verdict: 'like', why: '贝斯跳' }, 4_000);
+    // 后来改主意不喜欢《恋》了
+    store.addLike({ key: 'QQMusic.exe\u0001恋\u0001星野源', title: '恋', artist: '星野源', verdict: 'no', why: '听腻了' }, 5_000);
+
+    const liked = store.likedTracks(20);
+    assert.equal(liked.length, 1);
+    assert.equal(liked[0].title, '激動');
+    assert.equal(liked[0].why, '网易云再标一次');
+    assert.equal(store.likedCount(), 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('MusicWorld 集成：播不满 20 秒不删想听；满 20 秒核销、顺位补上、panelSnapshot 双容器分列、段事件一次性提醒', async () => {
+  const { MusicWorld } = await import('../src/world.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'music-world-wants-'));
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => { throw new Error(`禁止外网：${String(url)}`); };
+  try {
+    const world = new MusicWorld({
+      cfg: {
+        ...MUSIC_DEFAULTS(),
+        lyricAware: false,
+        audioReactive: false,
+        yieldToHearthstone: false,
+        autoHearEverySec: 0,
+        segmentEverySec: 22,
+        maxSegmentsPerTrack: 3,
+      },
+      dataDir: dir,
+      timezone: 'Asia/Shanghai',
+      botName: '大肥鱼',
+    });
+    const deferred = [];
+    const pushed = [];
+    world.host = {
+      log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      pushEvent: async (ev) => { pushed.push(ev); return { ...ev, cursor: pushed.length }; },
+      pushDeferred: (spec, opts) => { deferred.push({ spec, opts }); },
+      withdrawPending: async () => true,
+    };
+    world.tracker = world.makeTracker();
+    world.lyrics.peek = () => null;
+    world.lyrics.ensure = async () => null;
+
+    // 预置两条想听 + 一条喜欢
+    world.store.addWant({
+      source: 'qq', id: '2', mid: 'm2', title: '月光', artist: '德彪西',
+      album: '', durSec: 180, url: 'https://y.qq.com/2', why: '备选第二首',
+    }, T0 - 20_000);
+    world.store.addWant({
+      source: 'qq', id: '1', mid: 'm1', title: '理想三旬', artist: '陈鸿宇',
+      album: '', durSec: 120, url: 'https://y.qq.com/1', why: '想听人声',
+    }, T0 - 10_000);
+    world.store.addLike({
+      key: 'QQMusic.exe\u0001激動\u0001RAS', title: '激動', artist: 'RAS', verdict: 'like', why: '够劲',
+    }, T0 - 30_000);
+
+    // 1) 切到《理想三旬》只听 10 秒就切走：不该删
+    for (let s = 0; s <= 10; s += 1) {
+      world.onTick({ ts: T0 + s * 1000, sessions: [snap('理想三旬', '陈鸿宇', { posSec: s, durSec: 120 })] });
+    }
+    world.onTick({ ts: T0 + 11_000, sessions: [snap('别的歌', '某人', { posSec: 1, durSec: 200 })] });
+    assert.equal(world.store.wantCount(), 2, '只放 10 秒切走不算真正放过，不能误删');
+
+    // 2) 重新点开《理想三旬》放到 75 秒（跨过 20 秒核销线与第 2 段；短曲第 1 段由 skipSignal 跳过）
+    for (let s = 12; s <= 87; s += 1) {
+      world.onTick({ ts: T0 + s * 1000, sessions: [snap('理想三旬', '陈鸿宇', { posSec: s - 12, durSec: 120 })] });
+    }
+    await new Promise((r) => setTimeout(r, 30));
+
+    assert.equal(world.store.wantCount(), 1, '播满 20 秒后《理想三旬》应已划掉');
+    assert.equal(world.store.wants(10)[0].title, '月光', '下一首应自动顶上第一顺位');
+
+    // 换歌事件应告知她这首在想听清单里
+    const trackEv = pushed.find((e) => e.type === 'music.track' && e.text.includes('理想三旬'));
+    assert.ok(trackEv && trackEv.text.includes('想听清单里'), '换歌事件应带出想听来源');
+
+    // 面板快照同时有「喜欢听什么」与「想听什么」两个独立列表
+    const snapshot = world.panelSnapshot();
+    assert.equal(snapshot.likeTotal, 1);
+    assert.equal(snapshot.likes[0].title, '激動');
+    assert.equal(snapshot.wantTotal, 1);
+    assert.equal(snapshot.wants[0].title, '月光');
+
+    // 接力候选直接给出《月光》为第 1 首
+    const cand = world.relayCandidatesText(snap('理想三旬', '陈鸿宇'));
+    assert.match(cand, /第 1 首《月光》/);
+
+    // 段事件里带一次性「已划掉」事实提示，delivered 后清掉
+    assert.ok(deferred.length >= 1, '应收到第 2 段 deferred 推送');
+    const segText = deferred[deferred.length - 1].spec.render();
+    assert.match(segText, /想听清单里划掉了/);
+    world.onEventsSettled([{ cursor: 99, senderKey: deferred[deferred.length - 1].spec.senderKey }], 'delivered');
+    assert.equal(world.fulfilledWantNotice, null, 'delivered 后一次性提醒应清掉');
+
+    // 3) 短曲（< 30 秒）在收尾 record() 兜底核销
+    world.store.addWant({
+      source: 'qq', id: '4', mid: 'm4', title: '吉诺佩蒂', artist: '周婷',
+      album: '', durSec: 20, url: 'https://y.qq.com/4', why: '短曲测试',
+    }, T0 + 90_000);
+    for (let s = 91; s <= 104; s += 1) {
+      world.onTick({ ts: T0 + s * 1000, sessions: [snap('吉诺佩蒂', '周婷', { posSec: s - 91, durSec: 20 })] });
+    }
+    world.onTick({ ts: T0 + 105_000, sessions: [snap('下一首', '某人', { posSec: 1, durSec: 180 })] });
+    assert.equal(world.store.wants(10).some((w) => w.title === '吉诺佩蒂'), false, '短曲收尾应兜底划掉');
+  } finally {
+    globalThis.fetch = origFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

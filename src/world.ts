@@ -84,6 +84,8 @@ import { webuiMethods } from './world-webui.ts';
 // 只给“尚未 render”的 deferred 一个保守租约：隐藏/lease 失效时宿主会静默丢弃，
 // 不 render 也不 settled。第一次 render 后租约立即撤销，之后只能由 settled 结算。
 const DEFERRED_UNRENDERED_LEASE_MS = 2 * 60_000;
+/** 播满 20 秒算真的放了这首，从「想听清单」划掉（与 relay.ts 的 MIN_PLAYED_SEC 对齐）。 */
+const WANT_FULFILL_MS = 20_000;
 
 export interface MusicWorldOptions {
   cfg: MusicConfigSection;
@@ -234,6 +236,10 @@ export class MusicWorld implements World {
   /** 上一次采样看到的播放曲目键，用于识别切歌或暂停。 */
   private lastSampledKey = '';
   private lastSampledPlaying = false;
+  /** 本次播放已经核对过想听清单的曲目键，避免每秒重复扫盘。 */
+  private wantCheckedKey = '';
+  /** 刚从想听清单划掉的歌（一次性事实提醒，随该曲下一次段事件 delivered 后清掉）。 */
+  private fulfilledWantNotice: { key: string; titles: string[] } | null = null;
   /**
    * 接力点歌的状态（本机，不进记忆目录）。
    *
@@ -696,6 +702,8 @@ export class MusicWorld implements World {
       const k = trackKey(pick.session);
       if (this.lastSampledKey && this.lastSampledKey !== k) {
         this.playEpoch += 1;
+        this.wantCheckedKey = '';
+        if (this.fulfilledWantNotice?.key !== k) this.fulfilledWantNotice = null;
         this.withdrawStalePending(k);
       }
       this.lastSampledKey = k;
@@ -706,6 +714,8 @@ export class MusicWorld implements World {
     } else if (this.lastSampledPlaying) {
       this.lastSampledPlaying = false;
       this.playEpoch += 1;
+      this.wantCheckedKey = '';
+      this.fulfilledWantNotice = null;
       this.withdrawStalePending('');
     }
     const result = active.feed(payload.ts, pick.session);
@@ -719,6 +729,9 @@ export class MusicWorld implements World {
         this.log?.warn(`推送 ${signal.kind} 失败：${error instanceof Error ? error.message : String(error)}`);
       });
     }
+    // 先于 relay 核销想听清单：满 20 秒就划掉，这样到最后 35 秒推 relay 时
+    // relayCandidatesText() 里的编号已经是下一首，不会把自己再当候选递回去。
+    this.maybeFulfillWant(payload.ts);
     // 接力点歌：她递的那首快放完了。
     //
     // 单独一路，不塞进 tracker：tracker 只看播放水位，不知道"这首是谁点的"。
@@ -791,6 +804,28 @@ export class MusicWorld implements World {
     };
   }
 
+  /**
+   * 如果正在放的这首在「想听清单」里，且已连续播放满 WANT_FULFILL_MS，立刻划掉。
+   * 同一首本次播放只查盘一次，避免每秒轮询读文件。
+   */
+  private maybeFulfillWant(at: number): void {
+    const st = this.tracker?.state();
+    if (!st?.playing || !st.track || st.playedMs < WANT_FULFILL_MS) return;
+    const k = trackKey(st.track);
+    if (this.wantCheckedKey === k) return;
+    this.wantCheckedKey = k;
+    const done = this.store.completeWantsForTrack({
+      title: st.track.title,
+      artist: st.track.artist,
+      app: st.track.app,
+      durSec: st.durSec,
+    }, at);
+    if (done.length > 0) {
+      this.fulfilledWantNotice = { key: k, titles: done.map((w) => w.title) };
+      this.log?.info(`想听清单已核销：${done.map((w) => `《${w.title}》`).join('、')}。`);
+    }
+  }
+
   /** 上一句"为什么没触发"，用来给日志去重（同一句原因不重复打）。 */
   private lastRelayWhy = '';
   private setupNotifiedAt = 0;
@@ -811,8 +846,31 @@ export class MusicWorld implements World {
     const store = this.store;
     if (!store) return;
     if (!finished.track.title && finished.playedMs < 5000) return; // 元数据还没到就被换掉的空壳
+    const endTs = endedAt ?? Date.now();
     const day = localDay(this.opts.timezone, finished.startedAt);
-    store.append(day, store.recordOf(finished, endedAt ?? Date.now()));
+    store.append(day, store.recordOf(finished, endTs));
+    if (finished.track.title) {
+      const matched = store.matchWant({
+        title: finished.track.title,
+        artist: finished.track.artist,
+        app: finished.track.app,
+      });
+      if (matched) {
+        const minMs = matched.durSec > 0 && matched.durSec < 30
+          ? Math.min(WANT_FULFILL_MS, Math.round(matched.durSec * 600))
+          : WANT_FULFILL_MS;
+        if (finished.playedMs >= minMs) {
+          const done = store.completeWantsForTrack({
+            title: finished.track.title,
+            artist: finished.track.artist,
+            app: finished.track.app,
+          }, endTs);
+          if (done.length > 0) {
+            this.log?.info(`想听清单已核销（收尾）：${done.map((w) => `《${w.title}》`).join('、')}。`);
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -1118,11 +1176,17 @@ export class MusicWorld implements World {
             + `${alt ? `表情顶多换成【${alt}】。` : ''}抄中文别译英文；这张脸是按这首的劲儿定的，不按你这句话的情绪挑。`
           // 表情那一格空了，动作候选照样得发出去 —— 两个是独立的两件事。
           : choiceText(moveChoices(vibe.feel, move, lively), '', TRACK_SPECIAL);
+        // 在 await lyricCue 之前先查想听清单：避免异步查词期间被后续采样划掉导致漏掉提示。
+        const matchedWant = this.store?.matchWant(signal.track) ?? null;
         const lyricIntro = await this.lyricCue(signal.track, 'intro', 0, 0);
+        const wantNote = matchedWant
+          ? `这首在你之前的想听清单里${matchedWant.why ? `（当时写的理由：${matchedWant.why}）` : ''}，听满 20 秒会自动划掉。`
+          : '';
         text = `[${stamp}] 换歌了：${quote(signal.track, label)}。上一首是《${signal.prev.title || '未知曲目'}》${signal.prev.artist ? ` — ${signal.prev.artist}` : ''}，听了 ${humanDuration(signal.prevPlayedMs)}。`
           + (lyricIntro ? `${lyricIntro}` : '')
           + vibeNote
           + hearing
+          + wantNote
           + `（回一句：先报《歌名》和歌手，紧跟着一句实话——这一首哪儿好听、哪儿烦，挑一样具体的说（鼓点、贝斯、唱腔、编曲、词，挑一个）。`
           + `别写"我吃""这个跳"这种套话，也别每首都夸；上一首夸过的角度这一首换掉。两句加起来别超过三十个字。`
           + `${lyricIntro && !lyricIntro.startsWith('这首的') ? '词已经给你了，能接上就点一句词，别照念；接不上就说音色。' : ''}`
@@ -1281,6 +1345,7 @@ export class MusicWorld implements World {
                 typeof liveSessionPlayedMs === 'number' ? `连着听了 ${humanDuration(liveSessionPlayedMs)}` : '',
               ].filter(Boolean).join('、');
           const curToSec = livePosSec !== null ? Math.max(signal.toSec, Math.round(livePosSec)) : signal.toSec;
+          const wantDoneHere = Boolean(this.fulfilledWantNotice && this.fulfilledWantNotice.key === sheetKey);
           const body = `[${curStamp}] ${quote(signal.track, label)} 放到 ${curPosText}${whereNow}。`
             + (vibe.source === 'none'
               ? '这首还没标。'
@@ -1291,6 +1356,7 @@ export class MusicWorld implements World {
             + (sheetLineNow ? `${sheetLineNow}` : '')
             + `这一首走到第 ${signal.index} 段（${clockOf(signal.fromSec)} → ${clockOf(curToSec)}${total}）${contextNow ? `，${contextNow}` : ''}`
             + `${signal.loopCount >= 2 ? `，这次收听里的第 ${signal.loopCount} 遍` : ''}。`
+            + (wantDoneHere ? '这首已经从想听清单里划掉了。' : '')
             + (lyricSegNow ? `${lyricSegNow}` : '')
             + `（${ask}${noClock ? ` ${noClock}` : ''}${hasWordsNow ? ' 词在上面：要评就落到那一句上，挑一句用，别把两句都念出来。' : ''}${emoji ? ` ${emoji}` : ''}${tagAsk ? ` ${tagAsk}` : ''}）`
             + (sayHintNow ? `\n${sayHintNow}` : '')
@@ -1304,6 +1370,7 @@ export class MusicWorld implements World {
             if (sheetNow) { this.lastSheetKey = sheetKey; this.lastSheetLine = sheetNow; }
             if (sayHintNow) { this.lastRepeatHint = sayHintRaw; this.lastRepeatAt = renderMs; this.log?.info(`复读提示：${sayHintNow}`); }
             if (hintNow) this.commitVocabHint();
+            if (wantDoneHere && this.fulfilledWantNotice?.key === sheetKey) this.fulfilledWantNotice = null;
           };
           const arm = (): void => {
             if (freshMilestoneNow) this.pendingMilestone = { count: doneToday, ownerKey: pendingAttemptKey };

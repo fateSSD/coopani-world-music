@@ -263,3 +263,56 @@ test('网盘冲突副本也要读得到', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('想听清单跨旧目录与同步目录：在同步目录核销后，旧目录的同一首不诈尸', () => {
+  const local = tmp('want-local');
+  const shared = tmp('want-shared');
+  try {
+    const oldStore = new ListenStore(local);
+    oldStore.addWant({
+      source: 'qq', id: '1', mid: 'm1', title: '小半', artist: '陈粒',
+      album: '', durSec: 297, url: 'https://y.qq.com/1', why: '想听',
+    }, 10_000);
+    oldStore.addWant({
+      source: 'qq', id: '2', mid: 'm2', title: '月光', artist: '德彪西',
+      album: '', durSec: 148, url: 'https://y.qq.com/2', why: '第二首',
+    }, 20_000);
+
+    const merged = new ListenStore(shared, local);
+    assert.equal(merged.wantCount(), 2);
+
+    const done = merged.completeWantsForTrack({
+      title: '小半 (Live)', artist: '陈粒', app: 'QQMusic.exe', durSec: 297,
+    }, 30_000);
+    assert.equal(done.length, 1);
+    assert.equal(done[0].title, '小半');
+
+    // 重新构造 ListenStore 模拟重启 / 跨机合并读，旧目录那条绝不诈尸
+    const reloaded = new ListenStore(shared, local);
+    assert.deepEqual(reloaded.wants(10).map((w) => w.title), ['月光']);
+    assert.equal(reloaded.wantCount(), 1);
+  } finally {
+    rmSync(local, { recursive: true, force: true });
+    rmSync(shared, { recursive: true, force: true });
+  }
+});
+
+test('喜欢听的歌跨目录合并，clearLikes 两处一起清', () => {
+  const local = tmp('like-local');
+  const shared = tmp('like-shared');
+  try {
+    const oldStore = new ListenStore(local);
+    oldStore.addLike({ key: 'QQMusic.exe\u0001激動\u0001RAS', title: '激動', artist: 'RAS', verdict: 'like', why: '够冲' }, 1_000);
+
+    const merged = new ListenStore(shared, local);
+    merged.addLike({ key: 'QQMusic.exe\u0001恋\u0001星野源', title: '恋', artist: '星野源', verdict: 'like', why: '贝斯跳' }, 2_000);
+    assert.equal(merged.likedCount(), 2);
+
+    assert.equal(merged.clearLikes(), true);
+    assert.equal(merged.likedCount(), 0);
+    assert.equal(merged.likes(50).length, 0);
+  } finally {
+    rmSync(local, { recursive: true, force: true });
+    rmSync(shared, { recursive: true, force: true });
+  }
+});
